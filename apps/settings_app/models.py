@@ -1,0 +1,330 @@
+import base64
+import hashlib
+import logging
+import os
+import threading
+import time
+
+from django.db import models
+
+logger = logging.getLogger(__name__)
+
+# Settings whose values are SECRETS and must be encrypted at rest in the DB
+# (bot token, payment keys, DB password, SMTP password, Django secret...).
+# Everything else (site name, URLs, flags) stays plaintext.
+SECRET_SETTING_KEYS = frozenset({
+    'telegram_bot_token',
+    'telegram_bot_token_alt',
+    'health_report_bot_token',
+    'telegram_api_hash',
+    'db_password',
+    'click_merchant_id',
+    'click_secret_key',
+    'payme_merchant_id',
+    'payme_secret_key',
+    'uzum_merchant_id',
+    'uzum_secret_key',
+    'email_smtp_password',
+    'django_secret_key',
+    'fragment_api_key',
+    'gemini_api_key',
+})
+
+_fernet_lock = threading.Lock()
+_fernet_instance = None
+_FERNET_PREFIX = 'enc:'
+
+
+def _get_fernet():
+    """Lazily build a Fernet cipher keyed off the DJANGO_SECRET_KEY (or a
+    dedicated SETTINGS_ENCRYPTION_KEY env var). The key itself is NEVER
+    stored in the database, so a DB leak does not expose the secrets."""
+    global _fernet_instance
+    if _fernet_instance is not None:
+        return _fernet_instance
+    with _fernet_lock:
+        if _fernet_instance is not None:
+            return _fernet_instance
+        try:
+            from cryptography.fernet import Fernet
+            raw = (os.getenv('SETTINGS_ENCRYPTION_KEY') or os.getenv('DJANGO_SECRET_KEY') or '').encode('utf-8')
+            if not raw:
+                raise RuntimeError('no key material')
+            key = base64.urlsafe_b64encode(hashlib.sha256(raw).digest())
+            _fernet_instance = Fernet(key)
+        except Exception:
+            logger.exception('Fernet initialization failed — secrets will stay plaintext')
+            _fernet_instance = False  # sentinel: don't retry on every read
+        return _fernet_instance
+
+
+def encrypt_setting_value(value: str) -> str:
+    """Return 'enc:<ciphertext>' for a secret value, or the raw value if the
+    cipher is unavailable (fail-safe: never break the app over encryption)."""
+    if not value:
+        return value
+    f = _get_fernet()
+    if not f:
+        return value
+    try:
+        return _FERNET_PREFIX + f.encrypt(value.encode('utf-8')).decode('ascii')
+    except Exception:
+        logger.exception('Setting encryption failed')
+        return value
+
+
+def decrypt_setting_value(value) -> str:
+    """Decrypt 'enc:...' values; return plaintext values untouched (backwards
+    compatible with legacy rows written before encryption existed)."""
+    if not value:
+        return value
+    if not str(value).startswith(_FERNET_PREFIX):
+        return value
+    f = _get_fernet()
+    if not f:
+        return value
+    try:
+        return f.decrypt(str(value)[len(_FERNET_PREFIX):].encode('ascii')).decode('utf-8')
+    except Exception:
+        # Corrupted / wrong key — return raw so the value is still visible
+        # (better than hard-failing the whole site).
+        logger.error(
+            'Setting decryption FAILED — if DJANGO_SECRET_KEY was rotated, '
+            'run backfill_settings_encryption.py / re-save the setting. '
+            'Returning raw value.',
+            exc_info=True,
+        )
+        return value
+
+
+class Setting(models.Model):
+    """Key-Value settings store for system configuration."""
+    key = models.CharField(max_length=200, unique=True)
+    value = models.TextField(blank=True, null=True)
+    is_encrypted = models.BooleanField(default=False)
+    description = models.TextField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'settings'
+        verbose_name = 'Setting'
+        verbose_name_plural = 'Settings'
+
+    def __str__(self):
+        return self.key
+
+    # ── In-process TTL cache ──
+    # get_setting() is called on almost EVERY request (bot config, telegram
+    # auth, payments, web app URL...). Without a cache each call is a DB hit.
+    # A short TTL (3s) keeps reads instant while admin edits still propagate
+    # almost immediately. set_setting() always invalidates the key.
+    #
+    # NOTE: None values ARE cached (via a sentinel) — a key whose stored
+    # value is None (or absent) doesn't re-hit the DB on every call.
+    _cache: dict = {}
+    _cache_lock = threading.Lock()
+    _CACHE_TTL = 3.0
+    _MISSING = object()  # sentinel: distinguishes 'not in cache' from cached None
+
+    @classmethod
+    def _cache_get(cls, key):
+        with cls._cache_lock:
+            item = cls._cache.get(key)
+            if item is None:
+                return cls._MISSING
+            if time.time() - item[0] < cls._CACHE_TTL:
+                return item[1]
+            cls._cache.pop(key, None)
+            return cls._MISSING
+
+    @classmethod
+    def _cache_set(cls, key, value):
+        with cls._cache_lock:
+            cls._cache[key] = (time.time(), value)
+
+    @classmethod
+    def _cache_invalidate(cls, key):
+        with cls._cache_lock:
+            cls._cache.pop(key, None)
+
+    @classmethod
+    def clear_cache(cls):
+        """Drop the whole in-process cache (used by tests and admin flush)."""
+        with cls._cache_lock:
+            cls._cache.clear()
+
+    @classmethod
+    def backfill_encryption(cls, keys=None):
+        """Upgrade any legacy plaintext secret rows to encrypted at rest.
+
+        Runs idempotently: already-encrypted rows are skipped. Called from a
+        management command / deploy step.
+        """
+        from django.db.models import Q
+        targets = keys or SECRET_SETTING_KEYS
+        rows = cls.objects.filter(key__in=targets).filter(
+            Q(is_encrypted=False) | Q(is_encrypted__isnull=True)
+        )
+        upgraded = 0
+        for row in rows:
+            if not row.value:
+                continue
+            new_val = encrypt_setting_value(row.value)
+            if new_val != row.value:
+                row.value = new_val
+                row.is_encrypted = True
+                row.save(update_fields=['value', 'is_encrypted'])
+                cls._cache_invalidate(row.key)
+                upgraded += 1
+        return upgraded
+
+    @classmethod
+    def get_setting(cls, key, default=None):
+        cached = cls._cache_get(key)
+        if cached is not cls._MISSING:
+            return cached
+        try:
+            obj = cls.objects.get(key=key)
+            raw = obj.value
+            if obj.is_encrypted:
+                raw = decrypt_setting_value(raw)
+        except cls.DoesNotExist:
+            raw = default
+        # Cache the DECRYPTED value (what every caller expects).
+        cls._cache_set(key, raw)
+        return raw
+
+    @classmethod
+    def set_setting(cls, key, value, description=''):
+        store_value = str(value)
+        is_encrypted = False
+        # SECURITY: secrets are encrypted at rest. Keys that are NOT secret
+        # keep the is_encrypted flag False so legacy plaintext rows stay
+        # readable. If a secret was previously stored plaintext (legacy),
+        # re-writing it here upgrades it to encrypted automatically.
+        if key in SECRET_SETTING_KEYS and store_value:
+            store_value = encrypt_setting_value(store_value)
+            is_encrypted = True
+        obj, created = cls.objects.update_or_create(
+            key=key,
+            defaults={'value': store_value, 'description': description, 'is_encrypted': is_encrypted}
+        )
+        cls._cache_invalidate(key)
+        return obj
+
+
+class SiteSetting:
+    """Helper class to manage site settings as a dict."""
+    DEFAULTS = {
+        # Site
+        'site_name': 'TOPUP HUB',
+        'site_description': "O'yinlar va raqamli xizmatlarga tez va ishonchli donat",
+        'support_telegram': '@topuphub',
+        'currency': 'UZS',
+        'maintenance_mode': 'False',
+
+        # Telegram
+        'telegram_bot_token': '',
+        'telegram_bot_token_alt': '',
+        'telegram_bot_username': '',
+        'web_app_url': '',
+        'super_admin_telegram_id': '',
+
+        # User Client (Telethon) — https://my.telegram.org → API development tools
+        'telegram_api_id': '',
+        'telegram_api_hash': '',
+
+        # Email
+        'email_smtp_host': '',
+        'email_smtp_port': '587',
+        'email_smtp_user': '',
+        'email_smtp_password': '',
+
+        # Django server
+        'django_secret_key': '',
+        'debug': 'True',
+        'allowed_hosts': 'localhost,127.0.0.1',
+
+        # CORS
+        'cors_allowed_origins': 'http://localhost:3000,http://localhost:8000',
+
+        # Database
+        'db_name': '',
+        'db_user': '',
+        'db_password': '',
+        'db_host': '',
+        'db_port': '',
+
+        # Payment gateways (legacy - stored for reference)
+        'click_merchant_id': '',
+        'click_secret_key': '',
+        'payme_merchant_id': '',
+        'payme_secret_key': '',
+        'uzum_merchant_id': '',
+        'uzum_secret_key': '',
+
+        # Fragment API (Telegram Stars & Premium auto-fulfillment, fragment-api.uz)
+        'fragment_api_base_url': 'https://fragment-api.uz/api/v1',
+        'fragment_api_key': '',
+
+        # Fragment API live price sync (daily)
+        'fragment_usd_uzs_rate': '12800',
+        'fragment_price_margin_percent': '15',
+        'fragment_price_sync_enabled': 'True',
+        'fragment_last_price_sync': '',
+        'fragment_last_sync_result': '',
+
+        # ── Card payment auto-verification (Telethon user client) ──
+        # payment_monitor_chat_id — bank-xabar chat/guruh; payment_report_chat_id
+        # — hisobot guruh; payment_suspicious_limit — shu qiymatdan katta tushum
+        # balansga avtomatik TUSHMADI (admin tasdiqlaydi); payment_timeout_minutes
+        # — to'lov uchun beriladigan vaqt; payment_unique_offset_max — yagona
+        # summani farqlash uchun qo'shiladigan offset; payment_card_number —
+        # mijozga ko'rsatiladigan karta raqami.
+        'payment_monitor_chat_id': '',
+        'payment_report_chat_id': '',
+        'payment_suspicious_limit': '500000',
+        'payment_timeout_minutes': '10',
+        'payment_unique_offset_max': '999',
+        'payment_card_number': '',
+        'payment_card_holder': '',
+        'payment_card_monitor_enabled': 'False',
+
+        # ── Security / Anti-Fraud (Gemini AI risk engine) ──
+        'gemini_api_key': '',
+        'gemini_model': 'gemini-3.1-flash-lite',
+        'security_ai_enabled': 'False',
+        'security_shadow_mode': 'True',
+        'security_fail_open': 'False',
+        'risk_low_max': '29',
+        'risk_medium_max': '49',
+        'risk_high_max': '69',
+        'velocity_10m_limit': '200000',
+        'velocity_1h_limit': '500000',
+        'velocity_24h_limit': '1500000',
+        'velocity_7d_limit': '5000000',
+        'new_user_max_payment': '300000',
+        'unique_amount_cooldown_min': '5',
+        'emergency_telegram_id': '',
+        'security_high_alerts_enabled': 'True',
+        'security_critical_alerts_enabled': 'True',
+        'security_ack_timeout_min': '2',
+        'security_escalation_timeout_min': '5',
+        'security_secondary_admin_id': '',
+        'security_lockdown': 'False',
+        'security_blacklist': '',
+        'security_whitelist': '',
+    }
+
+    @classmethod
+    def get_all(cls):
+        settings = {}
+        for key, default in cls.DEFAULTS.items():
+            settings[key] = Setting.get_setting(key, default)
+        return settings
+
+    @classmethod
+    def update(cls, data):
+        for key, value in data.items():
+            if key in cls.DEFAULTS:
+                Setting.set_setting(key, value)
