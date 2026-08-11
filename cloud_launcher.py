@@ -42,10 +42,22 @@ def _log(tag: str, msg: str):
 
 
 def _session_bootstrap():
-    """SESSION_B64 env'idan donzo_user.session ni tiklaydi."""
+    """Sessiyani tiklaydi: SESSION_B64 env yoki Neon DB'dagi
+    'user_client_session_b64' sozlamasidan (cloud deploy uchun)."""
     b64 = os.getenv('SESSION_B64', '')
     if not b64:
-        _log('SESSION', "SESSION_B64 yo'q — user_client sessiyasi env'dan olinmaydi")
+        try:
+            import django
+            os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+            django.setup()
+            from apps.settings_app.models import Setting
+            b64 = Setting.get_setting('user_client_session_b64', '') or ''
+            _log('SESSION', "sessiya Neon DB'dan o'qildi")
+        except Exception as exc:
+            _log('SESSION', f"DB sessiya o'qilmadi: {type(exc).__name__}: {str(exc)[:120]}")
+            return
+    if not b64:
+        _log('SESSION', "sessiya topilmadi (env ham, DB ham bo'sh) — user_client ishlamaydi")
         return
     try:
         data = base64.b64decode(b64)
