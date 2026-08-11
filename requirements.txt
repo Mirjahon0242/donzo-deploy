@@ -9,10 +9,12 @@ python-dotenv==1.0.0
 Pillow==10.3.0
 django-cors-headers==4.3.0
 django-filter==24.2
-drf-yasg==1.21.7
+drf-yasg==1.21.15
 python-telegram-bot==21.1.0
 celery==5.4.0
 redis==5.0.0
 gunicorn==22.0.0
-setuptools
+# setuptools<82 — pkg_resources'ni beradi (82+ olib tashlangan; drf-yasg 1.21.15
+# va boshqa eski kutubxonalar uni chaqiradi)
+setuptools<82
 telethon==1.44.0
