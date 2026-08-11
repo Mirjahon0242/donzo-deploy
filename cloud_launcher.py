@@ -139,6 +139,39 @@ def _pinger():
         _stop.wait(PING_INTERVAL)
 
 
+def _direct_db_url():
+    """Neon pooler URL'ini direct URL'ga aylantiradi.
+
+    PgBouncer (pooler) migratsiya/DDL da osilib qoladi — direct ulanish
+    tez va ishonchli. Faqat migratsiya jarayoni uchun ishlatiladi.
+    """
+    url = os.getenv('DATABASE_URL', '')
+    if '-pooler' in url:
+        return url.replace('-pooler', '')
+    return url
+
+
+def _run_migrations():
+    """Migratsiyani fon thread'da bajaradi — daphne'ni bloklamaydi.
+
+    Schema allaqachon Neon'da bor; bu faqat yangi kod deploy'larida
+    qo'shimcha migratsiyalarni qo'llash uchun (non-blocking).
+    """
+    try:
+        env = dict(os.environ)
+        direct = _direct_db_url()
+        if direct:
+            env['DATABASE_URL'] = direct
+        _log('MIGRATE', 'migratsiya boshlanmoqda (direct ulanish)...')
+        subprocess.run(
+            [sys.executable, 'manage.py', 'migrate', '--noinput'],
+            cwd=BASE_DIR, env=env, timeout=300,
+        )
+        _log('MIGRATE', 'migratsiya tugadi')
+    except Exception as exc:
+        _log('MIGRATE', f'migratsiya xatosi: {type(exc).__name__}: {str(exc)[:120]}')
+
+
 def _daily_audit():
     """Kunlik audit hisobotini AUDIT_HOUR (UTC) da yuboradi."""
     while not _stop.is_set():
@@ -175,6 +208,7 @@ def main():
                for n, c in procs]
     threads.append(threading.Thread(target=_pinger, daemon=True))
     threads.append(threading.Thread(target=_daily_audit, daemon=True))
+    threads.append(threading.Thread(target=_run_migrations, daemon=True))
     for t in threads:
         t.start()
 

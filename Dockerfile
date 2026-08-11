@@ -20,5 +20,7 @@ ENV DJANGO_SETTINGS_MODULE=config.settings
 
 EXPOSE 8000
 
-# Migratsiya + statik; keyin cloud_launcher (daphne + bot + user_client)
-CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput 2>/dev/null; python cloud_launcher.py"]
+# cloud_launcher daphne + bot + user_client ni boshqaradi va migratsiyani
+# fon thread'da (direct Neon ulanish bilan) ishga tushiradi — daphne
+# darhol /health/ ga javob beradi.
+CMD ["python", "cloud_launcher.py"]
