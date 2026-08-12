@@ -400,6 +400,15 @@ def fragment_login(request):
             logger.info('[FragmentLogin] getInfo muvaffaqiyatsiz, yangi user rad etildi username=%s err=%s', username, err)
             # AI xato tahlili → staff guruhiga (throttled: 10 daqiqada bir marta)
             _report_login_error('fragment_verify', err, username)
+            # Telegram ichida (username akkauntga mos) — kod oqimi orqali kirish
+            # mumkin: frontend avtomatik kod so'raydi. Tashqarida — Fragment
+            # majburiy, soxta username'ga kod yuborilmaydi.
+            if telegram_username:
+                return Response(
+                    {'detail': 'Profilingiz Fragment orqali topilmadi — kirish kod bilan davom etadi.',
+                     'next_step': 'code'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
             return Response(
                 {'detail': f"Fragment orqali tasdiqlanmadi ({err}). To'g'ri Telegram username kiriting."},
                 status=status.HTTP_401_UNAUTHORIZED,

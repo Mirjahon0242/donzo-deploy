@@ -39,8 +39,9 @@ class LoginCodeTests(TestCase):
         resp = self.client.post(self.url, {'telegram_id': '123'}, format='json')
         self.assertEqual(resp.status_code, 400)
 
-    @mock.patch('apps.users.views._verify_username_real', return_value=({}, None))
+    @mock.patch('apps.users.views._bot_chat_username', return_value='uz_ultra')
     def test_code_sent_via_bot_not_returned(self, _m):
+        # Telegram ichida: getChat username'ni tasdiqlaydi (uz_ultra) → kod yuboriladi
         with mock.patch('apps.users.code_utils.send_code_to_chat', return_value=True) as send:
             resp = self.client.post(self.url, {'username': 'uz_ultra', 'telegram_id': '123456789'}, format='json')
         self.assertEqual(resp.status_code, 200)
@@ -58,13 +59,21 @@ class LoginCodeTests(TestCase):
         self.assertNotEqual(rec.code, args.args[2])
         self.assertEqual(rec.telegram_username, 'uz_ultra')
 
-    @mock.patch('apps.users.views._verify_username_real', return_value=({}, None))
-    def test_bot_not_started_returns_400_with_guidance(self, _m):
-        # Bot foydalanuvchini topa olmasa (Start bosilmagan) — 400 + yo'l ko'rsatma
-        with mock.patch('apps.users.code_utils.send_code_to_chat', return_value=False):
+    def test_bot_not_started_returns_400_with_guidance(self):
+        # Bot foydalanuvchini topa olmasa (getChat muvaffaqiyatsiz, Start
+        # bosilmagan) — 400 + yo'l ko'rsatma
+        with mock.patch('apps.users.views._bot_chat_username', return_value=None):
             resp = self.client.post(self.url, {'username': 'uz_ultra', 'telegram_id': '123456789'}, format='json')
         self.assertEqual(resp.status_code, 400)
         self.assertIn('Start', resp.data['detail'])
+
+    def test_username_mismatch_403(self):
+        # telegram_id ning username'i kiritilganga mos kelmasa — 403
+        # (boshqa birovning username'ini egallashning oldi olinadi)
+        with mock.patch('apps.users.views._bot_chat_username', return_value='other_user'):
+            resp = self.client.post(self.url, {'username': 'uz_ultra', 'telegram_id': '123456789'}, format='json')
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn('mos emas', resp.data['detail'])
 
     @mock.patch('apps.users.views._verify_username_real', return_value=({}, None))
     def test_dev_mode_returns_code_in_response(self, _m):
@@ -74,11 +83,12 @@ class LoginCodeTests(TestCase):
         self.assertEqual(resp.data['status'], 'dev')
         self.assertRegex(resp.data['code'], r'^\d{6}$')
 
-    def test_fake_username_rejected(self):
-        # Username Fragment'da ham, bazada ham yo'q — kod yuborilmaydi
+    def test_fake_username_rejected_outside_telegram(self):
+        # Telegramdan tashqarida (telegram_id yo'q): Username Fragment'da ham,
+        # bazada ham yo'q — kod yuborilmaydi
         with mock.patch('apps.users.views._verify_username_real',
                         return_value=(None, 'FRAGMENT_ERROR')):
-            resp = self.client.post(self.url, {'username': 'nobody_real', 'telegram_id': '123'}, format='json')
+            resp = self.client.post(self.url, {'username': 'nobody_real'}, format='json')
         self.assertEqual(resp.status_code, 400)
 
     # ── Kodni tekshirish ──
