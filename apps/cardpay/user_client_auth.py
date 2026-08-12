@@ -22,6 +22,7 @@ Security notes:
     the account. It is never exposed through any endpoint.
 """
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -33,6 +34,25 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # backend/
 SESSION_DIR = os.path.join(BASE_DIR, 'sessions')
 SESSION_FILE = os.path.join(SESSION_DIR, 'donzo_user.session')
+
+
+def _sync_session_to_db():
+    """Muvaffaqiyatli kirishdan keyin sessiyani Neon DB'ga saqlaydi.
+
+    Cloud deploy'da launcher sessiyani Neon'dan tiklaydi — yangi yozilgan
+    sessiya DB'ga qaytarilmasa keyingi restart eski (bloklangan) sessiyaga
+    qaytadi. Bu funksiya har muvaffaqiyatli login'da shu muammoni yopadi.
+    """
+    try:
+        if not os.path.exists(SESSION_FILE):
+            return
+        with open(SESSION_FILE, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('ascii')
+        from apps.settings_app.models import Setting
+        Setting.set_setting('user_client_session_b64', b64)
+        logger.info('Sessiya Neon DB\'ga sinxronlandi (%s belgi)', len(b64))
+    except Exception:
+        pass
 
 # In-memory login state (never persisted, never logged).
 _LOCK = threading.Lock()
@@ -307,6 +327,7 @@ def verify_code(code: str) -> dict:
             _PHONE = ''
             _PHONE_CODE_HASH = ''
             _NEEDS_PASSWORD = False
+        _sync_session_to_db()
         _restart_worker()
     return result
 
@@ -348,6 +369,7 @@ def verify_password(password: str) -> dict:
             _PHONE = ''
             _PHONE_CODE_HASH = ''
             _NEEDS_PASSWORD = False
+        _sync_session_to_db()
         _restart_worker()
     return result
 

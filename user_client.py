@@ -58,6 +58,27 @@ SESSION_FILE = os.path.join(SESSION_DIR, 'donzo_user.session')
 # Exit codes understood by the supervisor
 EXIT_NO_CREDENTIALS = 3
 EXIT_NOT_AUTHORIZED = 4
+EXIT_SESSION_BLOCKED = 5  # AuthKeyDuplicatedError — qayta kirish kerak
+
+
+def _sync_session_to_db():
+    """Joriy sessiya faylini Neon DB'ga saqlaydi.
+
+    Cloud deploy'da sessiya faqat Neon -> kontener yo'nalishida oqardi;
+    qayta kirishdan keyin yozilgan yangi sessiya restart'da yo'qolardi.
+    Endi muvaffaqiyatli ulanishda sessiya Neon'ga qaytib yoziladi.
+    """
+    try:
+        import base64
+        if not os.path.exists(SESSION_FILE):
+            return
+        with open(SESSION_FILE, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('ascii')
+        from apps.settings_app.models import Setting
+        Setting.set_setting('user_client_session_b64', b64)
+        _log(f"Sessiya Neon DB'ga sinxronlandi ({len(b64)} belgi)")
+    except Exception:
+        pass  # sessiya sinxronlash hech qachon ishni buzmaydi
 
 
 def _get_credentials():
@@ -104,6 +125,11 @@ async def main():
     try:
         await client.connect()
     except Exception as exc:
+        if type(exc).__name__ == 'AuthKeyDuplicatedError':
+            _log("SESSIYA BLOKLANGAN (ikki IP'da bir vaqtda ishlatilgan). "
+                 "Admin panel -> To'lov nazorati -> User Client orqali qayta kirish kerak "
+                 "(telefon raqam -> kod -> parol).")
+            sys.exit(EXIT_SESSION_BLOCKED)
         _log(f"XATO: Telegramga ulanishda xatolik: {type(exc).__name__}")
         sys.exit(EXIT_NOT_AUTHORIZED)
 
@@ -122,6 +148,8 @@ async def main():
         sys.exit(EXIT_NOT_AUTHORIZED)
 
     _log(f"User client ishga tushdi: @{me.username or me.first_name} (id={me.id})")
+    # Yangi sessiyani Neon'ga saqlaymiz — cloud restart'da yo'qolmasligi uchun
+    await sync_to_async(_sync_session_to_db)()
     user_client_stats.mark_started({
         'username': getattr(me, 'username', None) or '',
         'first_name': getattr(me, 'first_name', None) or '',

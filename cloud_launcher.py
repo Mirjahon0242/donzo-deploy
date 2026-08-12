@@ -120,6 +120,10 @@ def _supervise(name, cmd):
             _log(name, f"chiqdi (rc=0) — {backoff}s keyin qayta ishga tushadi")
         else:
             _log(name, f"YIQILDI (rc={rc}) — {backoff}s keyin qayta ishga tushadi")
+        # rc=5 (user_client): sessiya bloklangan — qayta kirish kerak, tez-tez
+        # urinish ma'nosiz. 5 daqiqada bir marta urinamiz.
+        if rc == 5 and name.upper() == 'USERCLIENT':
+            backoff = 300
         _stop.wait(backoff)
         backoff = 5 if lived > 300 else min(backoff * 2, 60)
 
