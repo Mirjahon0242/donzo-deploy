@@ -147,8 +147,8 @@ class LoginMetaTests(TestCase):
         )
         self.client = APIClient()
 
-    @mock.patch('apps.users.views._get_info_with_retry',
-                side_effect=lambda u: ({'username': '@meta_user', 'name': '', 'photo': '', 'is_premium': False}, None))
+    @mock.patch('apps.services.fragment_api.get_info',
+                return_value={'username': '@meta_user', 'name': '', 'photo': '', 'is_premium': False})
     def test_login_captures_ip(self, _m):
         resp = self.client.post(
             '/api/v1/auth/fragment-login/', {'username': 'meta_user'},

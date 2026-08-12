@@ -157,12 +157,16 @@ class LoginCodeTests(TestCase):
         self.assertEqual(resp.data['user']['id'],
                          User.objects.get(username='mirsaid0707').pk)
 
-    def test_admin_username_gets_super_admin(self):
+    def test_admin_username_not_promoted_via_code(self):
+        """SECURITY: kod-login (Fragment'siz) hech qachon super_admin
+        bermaydi — fragment_admin_usernames ro'yxati kimgadir ma'lum bo'lsa,
+        6 xonali kod orqali account takeover bo'lishi mumkin edi."""
         Setting.set_setting('fragment_admin_usernames', 'mirjahon_qochqorov,owner')
         self._make_code(username='mirjahon_qochqorov', telegram_id='555666')
         resp = self.client.post(self.verify_url, {'username': 'mirjahon_qochqorov', 'code': '123456'}, format='json')
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data['user']['role'], 'super_admin')
+        self.assertEqual(resp.data['user']['role'], 'customer')
+        self.assertNotEqual(resp.data['user']['role'], 'super_admin')
 
     def test_token_works_for_profile(self):
         self._make_code(username='premchi')

@@ -115,14 +115,17 @@ class FragmentLoginTests(TestCase):
     @mock.patch('apps.services.fragment_api.get_info',
                 return_value={'username': '@uz_ultra', 'name': '', 'photo': '', 'is_premium': False,
                               'error': {'code': 'FRAGMENT_ERROR', 'message': 'Topilmadi'}})
-    def test_existing_user_falls_back_when_fragment_fails(self, _m):
-        """Fragment API topa olmasa ham bazadagi mavjud mijoz kira oladi
-        (uz_ultra kabi real mijozlar bloklanmasligi uchun)."""
+    @mock.patch('apps.users.views._bot_chat_username', return_value='uz_ultra')
+    def test_existing_user_falls_back_when_fragment_fails(self, _m, _m2):
+        """Fragment API topa olmasa ham — telegram_id getChat bilan
+        tasdiqlansa — bazadagi mavjud mijoz kira oladi (uz_ultra kabi real
+        mijozlar bloklanmasligi uchun)."""
         existing = User.objects.create_user(
             username='uz_ultra', email='uz_ultra@fragment.user',
             telegram_username='uz_ultra', role='customer',
         )
-        resp = self.client.post('/api/v1/auth/fragment-login/', {'username': 'uz_ultra'}, format='json')
+        resp = self.client.post('/api/v1/auth/fragment-login/',
+                                {'username': 'uz_ultra', 'telegram_id': '5709391089'}, format='json')
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data['user']['id'], existing.pk)
         self.assertEqual(resp.data['user']['username'], 'uz_ultra')
@@ -131,15 +134,33 @@ class FragmentLoginTests(TestCase):
         self.assertEqual(existing.role, 'customer')
 
     @mock.patch('apps.services.fragment_api.get_info',
+                return_value={'username': '@uz_ultra', 'name': '', 'photo': '', 'is_premium': False,
+                              'error': {'code': 'FRAGMENT_ERROR', 'message': 'Topilmadi'}})
+    @mock.patch('apps.users.views._bot_chat_username', return_value=None)
+    def test_existing_user_without_telegram_id_rejected_on_fallback(self, _m, _m2):
+        """SECURITY: Fragment xato bo'lsa, telegram_id/getChat tasdiqsiz
+        mavjud user kirishi RAD etiladi (account takeover himoyasi)."""
+        User.objects.create_user(
+            username='uz_ultra', email='uz_ultra@fragment.user',
+            telegram_username='uz_ultra', role='customer',
+        )
+        resp = self.client.post('/api/v1/auth/fragment-login/', {'username': 'uz_ultra'}, format='json')
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.data.get('next_step'), 'code')
+
+    @mock.patch('apps.services.fragment_api.get_info',
                 return_value={'username': '@mokhinur_logist', 'name': '', 'photo': '', 'is_premium': False,
                               'error': {'code': 'RATE_LIMIT', 'message': 'limit'}})
-    def test_existing_user_falls_back_on_rate_limit(self, _m):
-        """Fragment API rate-limit berganida ham mavjud user kira oladi."""
+    @mock.patch('apps.users.views._bot_chat_username', return_value='mokhinur_logist')
+    def test_existing_user_falls_back_on_rate_limit(self, _m, _m2):
+        """Fragment API rate-limit berganida ham (getChat tasdiqlab) mavjud
+        user kira oladi."""
         User.objects.create_user(
             username='mokhinur_logist', email='mokhinur_logist@fragment.user',
             telegram_username='mokhinur_logist', role='customer',
         )
-        resp = self.client.post('/api/v1/auth/fragment-login/', {'username': 'mokhinur_logist'}, format='json')
+        resp = self.client.post('/api/v1/auth/fragment-login/',
+                                {'username': 'mokhinur_logist', 'telegram_id': '8802441950'}, format='json')
         self.assertEqual(resp.status_code, 200)
 
     def test_missing_username_400(self):

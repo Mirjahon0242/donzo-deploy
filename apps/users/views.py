@@ -317,10 +317,17 @@ def _get_or_create_user_by_username(username: str, info: dict):
 
     # ── Rol: admin usernames ro'yxati → super_admin; yangi → customer; ──
     #    mavjud user — roli saqlanadi (admin panel orqali boshqariladi).
-    admin_usernames = (Setting.get_setting('fragment_admin_usernames', '') or '').lower()
-    admin_list = [u.strip() for u in admin_usernames.split(',') if u.strip()]
-    if username in admin_list:
-        user.role = Role.SUPER_ADMIN
+    #
+    # SECURITY: super_admin promotsiyasi FAQAT Fragment bilan tasdiqlangan
+    # login yo'lida beriladi (info bo'sh emas). Kod-login (info={} — faqat
+    # kod tasdiqlash, Fragment emas) hech qachon admin rol bermaydi: aks
+    # holda fragment_admin_usernames ro'yxati kimgadir ma'lum bo'lsa, 6
+    # xonali kod olish orqali super_admin bo'lish mumkin edi.
+    if info:
+        admin_usernames = (Setting.get_setting('fragment_admin_usernames', '') or '').lower()
+        admin_list = [u.strip() for u in admin_usernames.split(',') if u.strip()]
+        if username in admin_list:
+            user.role = Role.SUPER_ADMIN
     elif created:
         user.role = Role.CUSTOMER
 
@@ -330,6 +337,7 @@ def _get_or_create_user_by_username(username: str, info: dict):
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([ScopedRateThrottle])
 def fragment_login(request):
     """
     POST /api/v1/auth/fragment-login/
@@ -381,15 +389,35 @@ def fragment_login(request):
         # ── MAVJUD user: tez yo'l ──
         # getInfo BIR marta sinanadi — yangi profil ma'lumotini olish uchun.
         # Xato bo'lsa (Fragment API user topolmasa / rate-limit) saqlangan
-        # profil bilan kirishga ruxsat beramiz: uz_ultra kabi real mijozlar
-        # Fragment API'da topilmasa ham bloklanmaydi. Retry kerak emas,
-        # chunki fallback mavjud — login tez bo'ladi.
+        # profil bilan kirishga ruxsat beramiz — LEKIN FAQAT Telegram
+        # akkaunt mosligi tasdiqlanganda (getChat).
+        #
+        # SECURITY: getInfo fallback'ini tekshiruvsiz qoldirib bo'lmaydi —
+        # haker istalgan MAVJUD username'ni yuborib (getInfo xato bo'lsa
+        # fallback o'tadi) o'sha user sifatida JWT olishi mumkin (account
+        # takeover). Endi fallback telegram_id + bot.getChat orqali username
+        # mosligini talab qiladi — kod oqimidagi kabi xavfsizlik.
         from apps.services import fragment_api
         info = fragment_api.get_info(username, timeout=12)
         verified = isinstance(info, dict) and not info.get('error')
         if not verified:
-            logger.info('[FragmentLogin] mavjud user fallback (getInfo xato): username=%s', username)
-            info = {}  # saqlangan profil ma'lumotlari ishlatiladi
+            # telegram_id (initDataUnsafe.user.id) kerak — u yuborilmagan
+            # yoki getChat moslikni tasdiqlamasa login RAD etiladi.
+            fallback_tg = str(request.data.get('telegram_id') or '').strip()
+            chat_uname = _bot_chat_username(fallback_tg) if fallback_tg else None
+            if chat_uname == username:
+                logger.info('[FragmentLogin] mavjud user fallback (getChat tasdiqladi): username=%s', username)
+                info = {}  # saqlangan profil ma'lumotlari ishlatiladi
+            else:
+                logger.warning(
+                    '[FragmentLogin] mavjud user fallback RAD ETILDI username=%s tg=%s chat=%s',
+                    username, fallback_tg or '-', chat_uname or '-',
+                )
+                return Response(
+                    {'detail': 'Profilingiz tasdiqlanmadi — Telegram bot orqali kod bilan kirishni davom eting.',
+                     'next_step': 'code'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
     else:
         # ── YANGI user: Fragment tekshiruvi MAJBURIY ──
         # Soxta username bilan akkaunt ochilmasin — getInfo muvaffaqiyatsiz
@@ -445,6 +473,13 @@ def fragment_login(request):
         'user': UserSerializer(user).data,
         'fragment': info,
     })
+
+
+# api_view dekoratori funksiyani WrappedAPIView class'iga o'rab, ma'lum
+# attribute'larni ko'chiradi — ammo throttle_scope ular orasida EMAS.
+# Uni WrappedAPIView (view_class) ga qo'yamiz: ScopedRateThrottle view'dan
+# o'qiydi, view instance esa class'dan oladi.
+fragment_login.view_class.throttle_scope = 'fragment_login'
 
 
 # ── BOT ORQALI TASDIQLASH KODI ────────────────────────────────────────────
@@ -576,7 +611,19 @@ def request_login_code(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # ── Dev / Telegramdan tashqari: kodni javobda qaytaramiz ──
+    # ── SECURITY FIX: kodni javobda qaytarish (dev rejim) account
+    # takeover'ga yo'l ochadi — haker istalgan username'ga kod olib, o'sha
+    # foydalanuvchi sifatida kirishi mumkin. Bu faqat DEBUG=True da ruxsat
+    # etiladi; production'da (DEBUG=False) kod HECH QACHON javobda qaytmaydi
+    # va Telegram ichida bo'lmagan so'rovlar rad etiladi.
+    from django.conf import settings as dj_settings
+    if not dj_settings.DEBUG:
+        return Response(
+            {'detail': 'Kod faqat Telegram orqali yuboriladi. Botdan Web App''ni oching va qayta urinib ko''ring.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ── Dev / Telegramdan tashqari (faqat DEBUG): kodni javobda qaytaramiz ──
     code_obj = create_login_code('dev', tg_username=username)
     return Response({'status': 'dev', 'code': code_obj.plain_code,
                      'detail': 'Dev rejim: kod Telegramga yuborilmadi, javobda berildi'})
