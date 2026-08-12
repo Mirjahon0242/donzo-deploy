@@ -874,6 +874,27 @@ def build_health_report() -> str:
     monitor_ok = bool(s.get('monitor_chat_id'))
     _check('Monitor chat', monitor_ok, s.get('monitor_chat_id') or 'sozlanmagan')
 
+    # 5b) Card limits — favqulodda holat: barcha kartalar limitda
+    from .models import PaymentCard
+    card_status = 'OK'
+    try:
+        cards = list(PaymentCard.objects.filter(enabled=True))
+        active_card = next((c for c in cards if c.is_active), None)
+        exhausted = [c for c in cards if c.is_exhausted]
+        if active_card is None:
+            card_status = 'faol karta yo\'q!'
+        elif active_card.is_exhausted:
+            card_status = f"BARCHA KARTALAR LIMITDA (faol ***{active_card.card_tail})"
+        elif exhausted:
+            card_status = f"{len(exhausted)} ta karta limitda (faol ***{active_card.card_tail})"
+        else:
+            card_status = f"faol ***{active_card.card_tail} (cheksiz)" if not (active_card.max_amount or active_card.max_transfers) else f"faol ***{active_card.card_tail} (limit mavjud)"
+    except Exception:
+        card_status = 'tekshirib bo\'lmadi'
+    # Ogohlantirish kerak bo'lgan holatlar: faol karta yo'q yoki barchasi limitda.
+    cards_ok = ('BARCHA' not in card_status) and ("yo'q" not in card_status) and ('tekshirib' not in card_status)
+    _check('Karta limitlari', cards_ok, card_status)
+
     # 6) Stats
     from django.db.models import Sum
     today = now.date()
