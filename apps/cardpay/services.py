@@ -770,6 +770,7 @@ def build_health_report() -> str:
     message says so. Sent by the user_client worker via the bot.
     """
     import json
+    import os
     from datetime import datetime, timezone as dt_timezone
     from pathlib import Path
     import urllib.request
@@ -804,43 +805,51 @@ def build_health_report() -> str:
     _check('Bot (@DONZOROBOT)', bot_ok, bot_detail)
 
     # 2) Backend (daphne)
-    # Backend http'ga 301 (https'ga) qaytaradi — urlopen redirect'ni kuzatib
-    # https:// ga o'tadi, TLS yo'qligi uchun timeout bo'ladi va sog'lom
-    # backend "o'lik" deb ko'rsatilardi. Redirect'ni o'chirib, 2xx/3xx ni
-    # tirik deb hisoblaymiz.
+    # Cloud'da RENDER_EXTERNAL_URL / PORT env ishlatiladi; lokalda
+    # localhost:8000. Backend http'ga 301 (https'ga) qaytaradi — urlopen
+    # redirect'ni kuzatib https:// ga o'tadi, TLS yo'qligi uchun timeout
+    # bo'ladi va sog'lom backend "o'lik" deb ko'rsatilardi. Redirect'ni
+    # o'chirib, 2xx/3xx ni tirik deb hisoblaymiz.
+    _be_url = os.getenv('RENDER_EXTERNAL_URL', '').rstrip('/')
+    if not _be_url:
+        _be_url = f"http://localhost:{os.getenv('PORT', '8000')}"
     backend_ok = False
     try:
         class _NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
         _opener = urllib.request.build_opener(_NoRedirect)
-        with _opener.open('http://localhost:8000/health/', timeout=5) as r:
+        with _opener.open(_be_url + '/health/', timeout=5) as r:
             backend_ok = r.status == 200
     except urllib.error.HTTPError as e:
         # 3xx (https'ga redirect) ham 'tirik' — backend javob berdi
         backend_ok = e.code in (301, 302, 303, 307, 308)
     except Exception:
         pass
-    _check('Backend (8000)', backend_ok, '' if backend_ok else 'javob bermayapti')
+    _check('Backend', backend_ok, '' if backend_ok else 'javob bermayapti')
 
-    # 3) Tunnel (public API URL from frontend/.env.local)
+    # 3) Public API (cloud'da Render URL; lokalda frontend/.env.local tunnel URL)
     tunnel_ok, tunnel_url = False, ''
-    try:
-        env = root / 'frontend' / '.env.local'
-        if env.exists():
-            for line in env.read_text(encoding='utf-8', errors='replace').splitlines():
-                if line.startswith('NEXT_PUBLIC_API_URL='):
-                    tunnel_url = line.split('=', 1)[1].strip().strip('"').strip("'")
-                    break
-    except Exception:
-        pass
+    _pub = os.getenv('RENDER_EXTERNAL_URL', '').rstrip('/')
+    if _pub:
+        tunnel_url = _pub + '/api/v1'
+    else:
+        try:
+            env = root / 'frontend' / '.env.local'
+            if env.exists():
+                for line in env.read_text(encoding='utf-8', errors='replace').splitlines():
+                    if line.startswith('NEXT_PUBLIC_API_URL='):
+                        tunnel_url = line.split('=', 1)[1].strip().strip('"').strip("'")
+                        break
+        except Exception:
+            pass
     if tunnel_url:
         try:
             with urllib.request.urlopen(tunnel_url.rstrip('/') + '/categories/', timeout=8) as r:
                 tunnel_ok = r.status == 200
         except Exception:
             pass
-    _check('Tunnel', tunnel_ok, '' if tunnel_ok else ('API URL topilmadi' if not tunnel_url else 'javob bermayapti'))
+    _check('Public API', tunnel_ok, '' if tunnel_ok else ('API URL topilmadi' if not tunnel_url else 'javob bermayapti'))
 
     # 4) User Client (worker itself)
     uc_ok, uc_detail = False, 'stats topilmadi'

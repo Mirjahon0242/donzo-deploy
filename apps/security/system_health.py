@@ -27,9 +27,16 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-BACKEND_HEALTH_URL = 'http://localhost:8000/health/'
+# CLOUD MODE: Render'da RENDER_EXTERNAL_URL/PORT env bor — backend URL
+# dinamik. Lokalda esa localhost:8000 (daphne) ishlatiladi.
+IS_CLOUD = bool(os.getenv('RENDER') or os.getenv('RENDER_EXTERNAL_URL'))
+CLOUD_URL = (os.getenv('RENDER_EXTERNAL_URL') or '').rstrip('/')
+LOCAL_BACKEND_URL = f"http://localhost:{os.getenv('PORT', '8000')}"
+BACKEND_BASE = CLOUD_URL or LOCAL_BACKEND_URL
+BACKEND_HEALTH_URL = BACKEND_BASE + '/health/'
 TUNNEL_LOG = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.freebuff', 'tunnel.log')
 BOT_STATS = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.freebuff', 'bot-stats.json')
+USER_CLIENT_STATS = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.freebuff', 'user-client-stats.json')
 USER_CLIENT_PORT = 18713
 WATCHDOG_PORT = 18717
 
@@ -138,11 +145,17 @@ def get_tunnel_url() -> str:
 
 def check_backend() -> dict:
     code, ok = _http_status(BACKEND_HEALTH_URL)
-    return {'name': 'Backend', 'port': 8000, 'status': 'ok' if ok else 'down',
+    return {'name': 'Backend', 'port': os.getenv('PORT', '8000'),
+            'status': 'ok' if ok else 'down',
             'detail': f'HTTP {code}' if code else 'aloqa yo\'q'}
 
 
 def check_tunnel() -> dict:
+    # CLOUD: tunnel yo'q — Render'ning doimiy URL'i tekshiriladi.
+    if IS_CLOUD and CLOUD_URL:
+        code, ok = _http_status(f'{CLOUD_URL}/health/', timeout=5.0)
+        return {'name': 'Public URL', 'port': '-', 'status': 'ok' if ok else 'down',
+                'detail': CLOUD_URL if ok else f'HTTP {code}'}
     url = get_tunnel_url()
     if not url:
         return {'name': 'Tunnel', 'port': '-', 'status': 'down', 'detail': 'URL topilmadi'}
@@ -180,6 +193,16 @@ def check_bot() -> dict:
 
 
 def check_user_client() -> dict:
+    # CLOUD: lock-port yo'q — user-client-stats.json heartbeat'ga qaraymiz
+    # (user_client_stats.mark_started/heartbeat har 30s yozadi).
+    stats = _read_json(USER_CLIENT_STATS)
+    if stats:
+        ts = stats.get('last_heartbeat') or stats.get('started_at') or 0
+        age_s = time.time() - _ts_to_epoch(ts)
+        ok = age_s < 180
+        detail = f'heartbeat {int(age_s)}s avval' if ok else 'heartbeat eskirgan'
+        return {'name': 'User Client', 'port': '-', 'status': 'ok' if ok else 'down',
+                'detail': detail}
     ok = _port_open(USER_CLIENT_PORT)
     return {'name': 'User Client', 'port': USER_CLIENT_PORT,
             'status': 'ok' if ok else 'down',
@@ -187,6 +210,10 @@ def check_user_client() -> dict:
 
 
 def check_watchdog() -> dict:
+    # CLOUD: cloud_launcher o'zi watchdog vazifasini bajaradi — launcher
+    # jonli bo'lsa (bu kod o'sha konteynerda ishlayapti) watchdog OK.
+    if IS_CLOUD:
+        return {'name': 'Watchdog', 'port': '-', 'status': 'ok', 'detail': 'cloud_launcher (Render)'}
     ok = _port_open(WATCHDOG_PORT)
     return {'name': 'Watchdog', 'port': WATCHDOG_PORT,
             'status': 'ok' if ok else 'down',
@@ -199,7 +226,9 @@ def check_database() -> dict:
         with connection.cursor() as cur:
             cur.execute('SELECT 1')
             cur.fetchone()
-        return {'name': 'Ma\'lumotlar bazasi', 'port': '-', 'status': 'ok', 'detail': 'SQLite OK'}
+        engine = connection.vendor  # 'sqlite' / 'postgresql'
+        return {'name': 'Ma\'lumotlar bazasi', 'port': '-', 'status': 'ok',
+                'detail': f'{engine} OK'}
     except Exception as exc:
         return {'name': 'Ma\'lumotlar bazasi', 'port': '-', 'status': 'down',
                 'detail': str(exc)[:80]}

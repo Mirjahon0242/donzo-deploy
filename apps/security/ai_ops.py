@@ -62,8 +62,8 @@ def _build_prompt(context: dict) -> str:
 
     system = (
         "You are the senior DevOps engineer for DONZO, a Telegram gaming top-up "
-        "platform (Django backend on localhost:8000, Next.js frontend on :3002, "
-        "python-telegram-bot polling, cloudflared tunnel, SQLite).\n\n"
+        "platform (Django backend on Render donzo-backend.onrender.com, PostgreSQL "
+        "on Neon, Next.js frontend on Vercel, python-telegram-bot polling).\n\n"
         "A system error occurred. Analyze the diagnostic context and respond with "
         "STRICT JSON (no markdown) in exactly this shape:\n"
         "{\n"
