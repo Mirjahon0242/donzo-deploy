@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # backend/
 SESSION_DIR = os.path.join(BASE_DIR, 'sessions')
 SESSION_FILE = os.path.join(SESSION_DIR, 'donzo_user.session')
+# Login wizard uses a SEPARATE temp session file. The worker (user_client.py)
+# may be running with (or restarting onto) SESSION_FILE at the same time the
+# admin is logging in — sharing the file causes "database is locked" or a
+# stale (blocked) auth key, surfacing as "kod tekshirilmadi". The wizard
+# signs into the temp file, then on success copies it over SESSION_FILE.
+LOGIN_SESSION_FILE = os.path.join(SESSION_DIR, 'donzo_user_login.session')
 
 # Login wizard state is stored in the DB (Setting), NOT in memory:
 # daphne runs several worker processes in the cloud, each with its own
@@ -55,12 +61,22 @@ _NEEDS_PASSWORD = False
 
 
 def _get_login_state():
-    """Read the pending login wizard state (DB-backed, cross-worker)."""
+    """Read the pending login wizard state (DB-backed, cross-worker).
+
+    Reads STRAIGHT from the DB, never from the Setting TTL cache: daphne
+    runs multiple worker processes, each with its OWN in-memory cache. If
+    start_phone writes on worker A and verify_code lands on worker B, B's
+    cache can still hold the OLD empty value for up to 3s → "kod
+tekshirilmadi". A direct .objects query always sees the fresh row.
+    """
     from apps.settings_app.models import Setting
-    phone = Setting.get_setting(_KC_PHONE, '') or ''
-    code_hash = Setting.get_setting(_KC_HASH, '') or ''
-    needs_2fa = (Setting.get_setting(_KC_2FA, '') or '').lower() == 'true'
-    ts_raw = Setting.get_setting(_KC_TS, '') or ''
+    rows = dict(Setting.objects.filter(
+        key__in=(_KC_PHONE, _KC_HASH, _KC_2FA, _KC_TS)
+    ).values_list('key', 'value'))
+    phone = rows.get(_KC_PHONE) or ''
+    code_hash = rows.get(_KC_HASH) or ''
+    needs_2fa = (rows.get(_KC_2FA) or '').lower() == 'true'
+    ts_raw = rows.get(_KC_TS) or ''
     try:
         ts = float(ts_raw)
         if time.time() - ts > _LOGIN_TTL_SECONDS:
@@ -86,7 +102,7 @@ def _clear_login_state():
         Setting.set_setting(key, '')
 
 
-def _sync_session_to_db():
+def _sync_session_to_db(session_file=None):
     """Muvaffaqiyatli kirishdan keyin sessiyani Neon DB'ga saqlaydi.
 
     Cloud deploy'da launcher sessiyani Neon'dan tiklaydi — yangi yozilgan
@@ -94,9 +110,10 @@ def _sync_session_to_db():
     qaytadi. Bu funksiya har muvaffaqiyatli login'da shu muammoni yopadi.
     """
     try:
-        if not os.path.exists(SESSION_FILE):
+        path = session_file or SESSION_FILE
+        if not os.path.exists(path):
             return
-        with open(SESSION_FILE, 'rb') as f:
+        with open(path, 'rb') as f:
             b64 = base64.b64encode(f.read()).decode('ascii')
         from apps.settings_app.models import Setting
         Setting.set_setting('user_client_session_b64', b64)
@@ -104,11 +121,31 @@ def _sync_session_to_db():
     except Exception:
         pass
 
-# In-memory login state (never persisted, never logged).
-_LOCK = threading.Lock()
-_PHONE = ''
-_PHONE_CODE_HASH = ''
-_NEEDS_PASSWORD = False
+
+def _promote_login_session():
+    """Login wizard muvaffaqiyatli bo'lgach temp sessiyani asosiy faylga
+    ko'chiradi (va Neon DB'ga yozadi). Worker keyingi restartda yangi
+    sessiyani oladi.
+    """
+    try:
+        if not os.path.exists(LOGIN_SESSION_FILE):
+            return
+        tmp = SESSION_FILE + '.new'
+        with open(LOGIN_SESSION_FILE, 'rb') as f:
+            data = f.read()
+        with open(tmp, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, SESSION_FILE)
+        _sync_session_to_db(SESSION_FILE)
+        logger.info('Login sessiyasi asosiy sessiya fayliga ko\'chirildi')
+    except Exception as exc:
+        logger.warning('sessiyani ko\'chirishda xato: %s', exc)
+    finally:
+        try:
+            if os.path.exists(LOGIN_SESSION_FILE):
+                os.remove(LOGIN_SESSION_FILE)
+        except Exception:
+            pass
 
 # Bound every network operation — a stuck Telegram connection must never
 # hold an admin API request for minutes.
@@ -206,10 +243,15 @@ def _run(coro, timeout=OP_TIMEOUT):
     return result['value']
 
 
-async def _make_client():
+async def _make_client(session_file=None):
     """Build a fresh TelegramClient. Async because credentials live in the
     DB (Settings) — reading them inside a running event loop must go
-    through sync_to_async, otherwise Django raises SynchronousOnlyOperation."""
+    through sync_to_async, otherwise Django raises SynchronousOnlyOperation.
+
+    session_file=None → the worker session (SESSION_FILE). Pass
+    LOGIN_SESSION_FILE during the login wizard so a concurrent worker can
+    never lock the file the wizard is writing.
+    """
     from asgiref.sync import sync_to_async
     from telethon import TelegramClient
     # thread_sensitive=False: under daphne the sync view runs in a worker
@@ -223,7 +265,7 @@ async def _make_client():
         logger.error("telegram_api_id raqam emas — Kalitlar bo'limida tekshiring")
         return None, None
     os.makedirs(SESSION_DIR, exist_ok=True)
-    client = TelegramClient(SESSION_FILE, api_id_int, api_hash)
+    client = TelegramClient(session_file or SESSION_FILE, api_id_int, api_hash)
     return client, api_id
 
 
@@ -280,45 +322,26 @@ def get_status() -> dict:
             'login_pending': bool(db_phone),
         }
 
-    # Worker offline → nobody holds the session, a live check is safe
-    # (this is also the path used during the login wizard).
-    async def _check():
-        client, _ = await _make_client()
-        if client is None:
-            return {'authorized': False, 'credentials': False}
-        await client.connect()
-        try:
-            authorized = await client.is_user_authorized()
-            me = None
-            if authorized:
-                try:
-                    me = await client.get_me()
-                except Exception:
-                    me = None
-            return {
-                'authorized': bool(authorized),
-                'credentials': True,
-                'phone': getattr(me, 'phone', None) or db_phone or _PHONE,
-                'username': getattr(me, 'username', None) or '',
-                'first_name': getattr(me, 'first_name', None) or '',
-                'user_id': getattr(me, 'id', None),
-            }
-        finally:
-            await client.disconnect()
-
-    try:
-        info = _run(_check())
-    except Exception as exc:
-        logger.exception('user client status check failed')
-        info = {'authorized': False, 'credentials': False, 'error': type(exc).__name__}
-
-    info['session_exists'] = session_exists
-    info['worker_online'] = online
-    info['last_heartbeat'] = stats.get('last_heartbeat')
-    info['restarts'] = stats.get('restarts', 0)
-    info['last_error'] = stats.get('last_error', '')
-    info['last_error_ts'] = stats.get('last_error_ts')
-    info['login_pending'] = bool(db_phone)
+    # Worker offline → DO NOT open a Telethon client against the session
+    # file here. During the login wizard verify_code/sign_in is writing the
+    # very same SQLite session file — a concurrent open from get_status
+    # (frontend polls every 30s) deadlocks it ("database is locked") and
+    # surfaces as "kod tekshirilmadi". Report stats + pending login state.
+    info = {
+        'authorized': False,
+        'credentials': True,
+        'session_exists': session_exists,
+        'worker_online': False,
+        'last_heartbeat': stats.get('last_heartbeat'),
+        'restarts': stats.get('restarts', 0),
+        'last_error': stats.get('last_error', ''),
+        'last_error_ts': stats.get('last_error_ts'),
+        'phone': db_phone or _PHONE,
+        'username': stats.get('account', {}).get('username') or '',
+        'first_name': stats.get('account', {}).get('first_name') or '',
+        'user_id': stats.get('account', {}).get('user_id'),
+        'login_pending': bool(db_phone),
+    }
     return info
 
 
@@ -330,8 +353,16 @@ def start_phone(phone: str) -> dict:
     if not re.match(r'^\+?[0-9]{7,15}$', phone):
         return {'ok': False, 'detail': "Telefon raqam noto'g'ri formatda (masalan +998901234567)"}
 
+    # Yangi login boshlanmoqda — eski temp sessiyani tozalaymiz (agar
+    # avvalgi urinish chala qolgan bo'lsa).
+    try:
+        if os.path.exists(LOGIN_SESSION_FILE):
+            os.remove(LOGIN_SESSION_FILE)
+    except Exception:
+        pass
+
     async def _start():
-        client, api_id = await _make_client()
+        client, api_id = await _make_client(LOGIN_SESSION_FILE)
         if client is None:
             return {'ok': False, 'detail': 'telegram_api_id / telegram_api_hash sozlanmagan (Kalitlar)'}
         await client.connect()
@@ -374,7 +405,7 @@ def verify_code(code: str) -> dict:
         return {'ok': False, 'detail': 'Kod kiritilmadi.'}
 
     async def _verify():
-        client, _ = await _make_client()
+        client, _ = await _make_client(LOGIN_SESSION_FILE)
         if client is None:
             return {'ok': False, 'detail': 'Kalitlar sozlanmagan'}
         await client.connect()
@@ -405,7 +436,7 @@ def verify_code(code: str) -> dict:
 
     if result.get('ok'):
         _clear_login_state()
-        _sync_session_to_db()
+        _promote_login_session()
         _restart_worker()
     return result
 
@@ -419,7 +450,7 @@ def verify_password(password: str) -> dict:
         return {'ok': False, 'detail': 'Parol so‘ralmagan. Avval kod bilan kirishni boshlang.'}
 
     async def _do():
-        client, _ = await _make_client()
+        client, _ = await _make_client(LOGIN_SESSION_FILE)
         if client is None:
             return {'ok': False, 'detail': 'Kalitlar sozlanmagan'}
         await client.connect()
@@ -443,7 +474,7 @@ def verify_password(password: str) -> dict:
 
     if result.get('ok'):
         _clear_login_state()
-        _sync_session_to_db()
+        _promote_login_session()
         _restart_worker()
     return result
 
@@ -512,9 +543,9 @@ def logout() -> dict:
     """Delete the session file + stop the running worker (supervisor restarts)."""
     removed = False
     try:
-        if os.path.exists(SESSION_FILE):
+        for base in (SESSION_FILE, LOGIN_SESSION_FILE):
             for suffix in ('', '.session'):
-                p = SESSION_FILE + ('' if suffix == '' else suffix)
+                p = base + ('' if suffix == '' else suffix)
                 if os.path.exists(p):
                     os.remove(p)
                     removed = True
