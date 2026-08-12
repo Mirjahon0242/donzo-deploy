@@ -198,6 +198,31 @@ def _daily_audit():
             _log('AUDIT', f"hisobot xatosi: {type(exc).__name__}: {str(exc)[:150]}")
 
 
+def _health_report_loop():
+    """Har 15 daqiqada tizim holati hisobotini staff guruhiga yuboradi.
+
+    Avval user_client ichidagi status_report_loop bajarardi — lekin u faqat
+    muvaffaqiyatli login'dan keyin ishlardi; sessiya yo'q bo'lganda hisobot
+    ham yo'qolardi. Bu thread mustaqil: health_report_bot_token bilan
+    ishlaydi, user_client sessiyasiga bog'liq emas.
+    """
+    import os as _os
+    _os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+    interval = int(_os.getenv('HEALTH_REPORT_INTERVAL', '900'))
+    time.sleep(45)  # daphne/DB tayyor bo'lishini kutamiz
+    while not _stop.is_set():
+        try:
+            import django
+            django.setup()
+            from apps.cardpay import services as cardpay_services
+            ok = cardpay_services.send_health_report()
+            _log('HEALTH', f"holat hisoboti: {'yuborildi' if ok else 'yuborilmadi (chat/token tekshiring)'}")
+        except Exception as exc:
+            _log('HEALTH', f"holat hisoboti xatosi: {type(exc).__name__}: {str(exc)[:120]}")
+        if _stop.wait(interval):
+            return
+
+
 def main():
     _log('MAIN', f"DONZO cloud launcher — port {PORT}")
     _session_bootstrap()
@@ -212,6 +237,7 @@ def main():
                for n, c in procs]
     threads.append(threading.Thread(target=_pinger, daemon=True))
     threads.append(threading.Thread(target=_daily_audit, daemon=True))
+    threads.append(threading.Thread(target=_health_report_loop, daemon=True))
     threads.append(threading.Thread(target=_run_migrations, daemon=True))
     for t in threads:
         t.start()

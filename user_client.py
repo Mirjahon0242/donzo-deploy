@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL = 30      # seconds
 SWEEP_INTERVAL = 60          # seconds — expire stale requests
 MONITOR_REFRESH_INTERVAL = 300  # re-resolve monitor entity every 5 min
-STATUS_REPORT_INTERVAL = 900  # seconds — system health report to report group (15 min)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_DIR = os.path.join(BASE_DIR, 'sessions')
@@ -200,19 +199,6 @@ async def main():
             except Exception:
                 logger.exception('escalation sweep failed')
 
-    async def status_report_loop():
-        # Send the system health report to the report group every 15 minutes:
-        # what is down, or "hammasi ishlayapti" when everything is fine.
-        # First report goes out ~30s after start so it is visible right away.
-        await asyncio.sleep(30)
-        while True:
-            try:
-                ok = await sync_to_async(cardpay_services.send_health_report)()
-                _log(f"Holat hisoboti: {'yuborildi' if ok else 'yuborilmadi (chat/token tekshiring)'}")
-            except Exception:
-                logger.exception('status report loop failed')
-            await asyncio.sleep(STATUS_REPORT_INTERVAL)
-
     # ── Saved Messages command center ──
     async def handle_saved_command(event, cmd):
         from apps.security import alerts as sec_alerts
@@ -320,7 +306,6 @@ async def main():
 
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(escalation_loop())
-    asyncio.create_task(status_report_loop())
 
     _log("User client tinglashni boshladi. Saved Messages'ga 'status' yozing.")
     await client.run_until_disconnected()
