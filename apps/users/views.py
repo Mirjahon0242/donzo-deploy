@@ -263,18 +263,21 @@ def _normalize_username(raw) -> str:
 
 def _get_info_with_retry(username: str):
     """getInfo'ni bir necha marta urinadi (API vaqti-vaqti bilan timeout
-    beradi). Muvaffaqiyatli dict yoki {error: ...} qaytaradi."""
+    beradi). Muvaffaqiyatli dict yoki {error: ...} qaytaradi.
+
+    Qisqa timeout (10s): auto-login ekrani uzoq osilib qolmasligi uchun —
+    muvaffaqiyatsizlikda frontend kod oqimiga tez o'tadi."""
     from apps.services import fragment_api
     info = None
     last_err = ''
-    for attempt in range(3):
-        info = fragment_api.get_info(username, timeout=30)
+    for attempt in range(2):
+        info = fragment_api.get_info(username, timeout=10)
         if isinstance(info, dict) and not info.get('error'):
             return info, None
         err = (info or {}).get('error') or {}
         last_err = err.get('code') if isinstance(err, dict) else ''
-        if attempt < 2:
-            time.sleep(1.5)
+        if attempt < 1:
+            time.sleep(1)
     return info, last_err or 'FRAGMENT_ERROR'
 
 
@@ -382,7 +385,7 @@ def fragment_login(request):
         # Fragment API'da topilmasa ham bloklanmaydi. Retry kerak emas,
         # chunki fallback mavjud — login tez bo'ladi.
         from apps.services import fragment_api
-        info = fragment_api.get_info(username, timeout=20)
+        info = fragment_api.get_info(username, timeout=12)
         verified = isinstance(info, dict) and not info.get('error')
         if not verified:
             logger.info('[FragmentLogin] mavjud user fallback (getInfo xato): username=%s', username)
@@ -442,6 +445,37 @@ def fragment_login(request):
 # bir martalik, 5 daqiqa yaroqli (code_utils / TelegramLoginCode).
 
 
+def _bot_chat_username(telegram_id: str):
+    """Telegram bot orqali telegram_id ning username'ini oladi (getChat).
+
+    Username mosligini tekshirish uchun: kod faqat o'sha telegram_id ga
+    yuboriladi — agar username mos kelmasa, boshqa birovning username'ini
+    egallash (takeover) mumkin bo'lardi. getChat bajarilmasa (bot foydalanuvchi
+    bilan ishlamagan) None qaytadi — kod ham yuborilmaydi.
+
+    Qaytadi: username (normalized) yoki None.
+    """
+    from apps.settings_app.models import Setting
+    token = (Setting.get_setting('telegram_bot_token', '') or '').strip()
+    if not token or not telegram_id:
+        return None
+    try:
+        import requests
+        resp = requests.get(
+            f'https://api.telegram.org/bot{token}/getChat',
+            params={'chat_id': str(telegram_id)}, timeout=8,
+        )
+        if not resp.ok:
+            return None
+        data = resp.json()
+        if not data.get('ok'):
+            return None
+        uname = (data.get('result') or {}).get('username') or ''
+        return _normalize_username(uname) or None
+    except Exception:
+        return None
+
+
 def _verify_username_real(username: str):
     """Username haqiqiy Telegram user ekanini tekshiradi (fragment_login bilan
     bir xil qoida): mavjud user — tez yo'l; yangi user — Fragment majburiy.
@@ -491,17 +525,26 @@ def request_login_code(request):
 
     telegram_id = str(request.data.get('telegram_id') or '').strip()
 
-    # Username haqiqiy ekanini tekshiramiz — soxta username'ga kod yuborilmaydi.
-    _info, err = _verify_username_real(username)
-    if err:
-        logger.info('[LoginCode] username tasdiqlanmadi username=%s err=%s', username, err)
-        return Response(
-            {'detail': f"{username} tasdiqlanmadi ({err}). To'g'ri Telegram username kiriting."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     if telegram_id:
-        # ── Telegram ichida: kod bot orqali chatga yuboriladi ──
+        # ── Telegram ichida: username ↔ telegram_id mosligini BOT orqali
+        # tekshiramiz (getChat). Kod shu telegram_id ga yuboriladi — agar
+        # username mos kelmasa, boshqa birovning username'ini egallash
+        # (account takeover) mumkin bo'lardi. Bu tekshiruv Fragment'siz ham
+        # yangi foydalanuvchilarga kod orqali kirishni ochadi.
+        chat_username = _bot_chat_username(telegram_id)
+        if chat_username is None:
+            logger.info('[LoginCode] getChat bajarilmadi username=%s tg=%s', username, telegram_id)
+            return Response(
+                {'detail': "Tasdiqlash kodi yuborilmadi. @DONZOROBOT'ni ochib Start tugmasini bosing, so'ng qayta urinib ko'ring."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if chat_username != username:
+            logger.info('[LoginCode] username mos emas: typed=%s chat=%s', username, chat_username)
+            return Response(
+                {'detail': f"@{username} Telegram akkauntingizga mos emas. Siz @{chat_username} akkauntidasiz — faqat o'z username'ingiz bilan kirishingiz mumkin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ── Kod bot orqali chatga yuboriladi ──
         code_obj = create_login_code(telegram_id, tg_username=username)
         bot_token = (Setting.get_setting('telegram_bot_token', '') or '').strip()
         sent = bool(bot_token) and send_code_to_chat(bot_token, telegram_id, code_obj.plain_code)
@@ -512,6 +555,17 @@ def request_login_code(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response({'status': 'sent', 'detail': 'Kod Telegram bot orqali yuborildi'})
+
+    # ── Telegramdan tashqari (desktop/dev): telegram_id yo'q — username
+    # haqiqiy ekanini Fragment orqali tekshiramiz (soxta username'ga kod
+    # yuborilmaydi). Mavjud user — tez yo'l; yangi user — Fragment majburiy.
+    _info, err = _verify_username_real(username)
+    if err:
+        logger.info('[LoginCode] username tasdiqlanmadi username=%s err=%s', username, err)
+        return Response(
+            {'detail': f"{username} tasdiqlanmadi ({err}). To'g'ri Telegram username kiriting."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     # ── Dev / Telegramdan tashqari: kodni javobda qaytaramiz ──
     code_obj = create_login_code('dev', tg_username=username)
