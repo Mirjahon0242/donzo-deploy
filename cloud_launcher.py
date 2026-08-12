@@ -103,6 +103,7 @@ def _spawn(cmd, name, cwd=BASE_DIR):
 def _supervise(name, cmd):
     """Jarayonni backoff bilan abadiy nazorat qiladi."""
     backoff = 5
+    restart_flag = os.path.join(BASE_DIR, 'sessions', '.restart_requested')
     while not _stop.is_set():
         proc = _spawn(cmd, name)
         if proc is None:
@@ -124,6 +125,24 @@ def _supervise(name, cmd):
         # urinish ma'nosiz. 5 daqiqada bir marta urinamiz.
         if rc == 5 and name.upper() == 'USERCLIENT':
             backoff = 300
+        # Admin panel orqali qayta kirish tugallanganda _restart_worker()
+        # shu flag faylni yaratadi — backoff'ni kutmasdan darhol qayta
+        # ishga tushirish uchun (qolgan 5 daqiqani kutmaymiz).
+        if name.upper() == 'USERCLIENT':
+            waited = 0
+            while not _stop.is_set() and waited < backoff:
+                if os.path.exists(restart_flag):
+                    try:
+                        os.remove(restart_flag)
+                    except OSError:
+                        pass
+                    _log(name, f"qayta kirish flagi topildi — darhol restart (kutilgan {waited}s)")
+                    backoff = 0
+                    break
+                _stop.wait(3)
+                waited += 3
+            if backoff == 0:
+                continue
         _stop.wait(backoff)
         backoff = 5 if lived > 300 else min(backoff * 2, 60)
 

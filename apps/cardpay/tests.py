@@ -549,10 +549,7 @@ class UserClientAuthTests(TestCase):
     """
 
     def setUp(self):
-        with user_client_auth._LOCK:
-            user_client_auth._PHONE = ''
-            user_client_auth._PHONE_CODE_HASH = ''
-            user_client_auth._NEEDS_PASSWORD = False
+        user_client_auth._clear_login_state()
 
     def test_verify_code_without_phone_returns_clear_error(self):
         r = user_client_auth.verify_code('12345')
@@ -560,8 +557,7 @@ class UserClientAuthTests(TestCase):
         self.assertIn('raqam', r['detail'])
 
     def test_verify_code_without_code_returns_clear_error(self):
-        with user_client_auth._LOCK:
-            user_client_auth._PHONE = '+998901234567'
+        user_client_auth._set_login_state('+998901234567', 'dummyhash', False)
         r = user_client_auth.verify_code('')
         self.assertFalse(r['ok'])
         self.assertIn('Kod', r['detail'])
@@ -569,9 +565,7 @@ class UserClientAuthTests(TestCase):
     def test_verify_code_validates_bad_code_without_crash(self):
         # With a phone set but no real Telegram session, sign_in must fail
         # gracefully with an error dict — not raise UnboundLocalError.
-        with user_client_auth._LOCK:
-            user_client_auth._PHONE = '+998901234567'
-            user_client_auth._PHONE_CODE_HASH = 'dummyhash'
+        user_client_auth._set_login_state('+998901234567', 'dummyhash', False)
         r = user_client_auth.verify_code('00000')
         self.assertFalse(r['ok'])
         self.assertIn('detail', r)
@@ -580,3 +574,22 @@ class UserClientAuthTests(TestCase):
         r = user_client_auth.verify_password('secret')
         self.assertFalse(r['ok'])
         self.assertIn('Parol', r['detail'])
+
+    def test_login_state_is_db_backed_cross_worker(self):
+        """Regression: login state must survive across daphne worker
+        processes (in-memory globals are per-process → "kod topilmadi")."""
+        user_client_auth._set_login_state('+998901234567', 'hash123', True)
+        phone, code_hash, needs_2fa = user_client_auth._get_login_state()
+        self.assertEqual(phone, '+998901234567')
+        self.assertEqual(code_hash, 'hash123')
+        self.assertTrue(needs_2fa)
+        # Simulate a different worker process: in-memory globals reset
+        user_client_auth._PHONE = ''
+        user_client_auth._PHONE_CODE_HASH = ''
+        user_client_auth._NEEDS_PASSWORD = False
+        phone2, code_hash2, needs_2fa2 = user_client_auth._get_login_state()
+        self.assertEqual(phone2, '+998901234567')
+        self.assertEqual(code_hash2, 'hash123')
+        self.assertTrue(needs_2fa2)
+        user_client_auth._clear_login_state()
+        self.assertEqual(user_client_auth._get_login_state(), ('', '', False))

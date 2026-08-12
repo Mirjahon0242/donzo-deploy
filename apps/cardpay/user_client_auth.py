@@ -28,12 +28,62 @@ import os
 import re
 import subprocess
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # backend/
 SESSION_DIR = os.path.join(BASE_DIR, 'sessions')
 SESSION_FILE = os.path.join(SESSION_DIR, 'donzo_user.session')
+
+# Login wizard state is stored in the DB (Setting), NOT in memory:
+# daphne runs several worker processes in the cloud, each with its own
+# memory — a phone/code_hash written by one worker would be invisible to
+# the worker that handles the "verify code" request (→ "kod topilmadi").
+# DB keys (plaintext, short-lived, never logged):
+_KC_PHONE = 'user_client_login_phone'
+_KC_HASH = 'user_client_login_code_hash'
+_KC_2FA = 'user_client_login_needs_password'
+_KC_TS = 'user_client_login_started_at'
+_LOGIN_TTL_SECONDS = 10 * 60  # code expires in ~5 min; allow 10 min total
+
+# In-memory login state (never persisted, never logged).
+_LOCK = threading.Lock()
+_PHONE = ''
+_PHONE_CODE_HASH = ''
+_NEEDS_PASSWORD = False
+
+
+def _get_login_state():
+    """Read the pending login wizard state (DB-backed, cross-worker)."""
+    from apps.settings_app.models import Setting
+    phone = Setting.get_setting(_KC_PHONE, '') or ''
+    code_hash = Setting.get_setting(_KC_HASH, '') or ''
+    needs_2fa = (Setting.get_setting(_KC_2FA, '') or '').lower() == 'true'
+    ts_raw = Setting.get_setting(_KC_TS, '') or ''
+    try:
+        ts = float(ts_raw)
+        if time.time() - ts > _LOGIN_TTL_SECONDS:
+            _clear_login_state()
+            return '', '', False
+    except (TypeError, ValueError):
+        pass
+    return phone, code_hash, needs_2fa
+
+
+def _set_login_state(phone, code_hash='', needs_2fa=False):
+    """Persist the login wizard state so any daphne worker can continue."""
+    from apps.settings_app.models import Setting
+    Setting.set_setting(_KC_PHONE, phone or '')
+    Setting.set_setting(_KC_HASH, code_hash or '')
+    Setting.set_setting(_KC_2FA, 'true' if needs_2fa else 'false')
+    Setting.set_setting(_KC_TS, str(time.time()))
+
+
+def _clear_login_state():
+    from apps.settings_app.models import Setting
+    for key in (_KC_PHONE, _KC_HASH, _KC_2FA, _KC_TS):
+        Setting.set_setting(key, '')
 
 
 def _sync_session_to_db():
@@ -63,6 +113,43 @@ _NEEDS_PASSWORD = False
 # Bound every network operation — a stuck Telegram connection must never
 # hold an admin API request for minutes.
 OP_TIMEOUT = 30
+
+
+def _kill_worker_crossplatform() -> None:
+    """Kill running user_client.py worker processes (any OS).
+
+    Windows → PowerShell CIM; Linux/macOS → pkill. The cloud launcher
+    auto-restarts the worker after a successful login.
+    """
+    if os.name == 'nt':
+        ps = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -match 'user_client\\.py' -and "
+            "$_.CommandLine -notmatch 'supervisor' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "
+            "Write-Output $_.ProcessId }"
+        )
+        try:
+            out = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', ps],
+                capture_output=True, text=True, timeout=15,
+            ).stdout or ''
+        except Exception as exc:
+            logger.warning('kill worker (powershell) failed: %s', exc)
+            return
+        for line in out.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                logger.info('user_client worker killed (pid %s)', line)
+    else:
+        try:
+            subprocess.run(
+                ['pkill', '-f', 'user_client\.py'],
+                capture_output=True, text=True, timeout=15,
+            )
+            logger.info('user_client worker pkill yuborildi (cloud)')
+        except Exception as exc:
+            logger.warning('kill worker (pkill) failed: %s', exc)
 
 
 def _get_credentials():
@@ -174,6 +261,7 @@ def get_status() -> dict:
     # ("database is locked") — which previously surfaced as a bogus
     # "KIRILMAGAN" status. So: worker online → trust the auth state the
     # worker itself wrote to stats (it only runs after a successful login).
+    db_phone, _db_hash, _db_2fa = _get_login_state()
     if online:
         account = stats.get('account') or {}
         return {
@@ -185,10 +273,11 @@ def get_status() -> dict:
             'restarts': stats.get('restarts', 0),
             'last_error': stats.get('last_error', ''),
             'last_error_ts': stats.get('last_error_ts'),
-            'phone': account.get('phone') or _PHONE,
+            'phone': account.get('phone') or db_phone or _PHONE,
             'username': account.get('username') or '',
             'first_name': account.get('first_name') or '',
             'user_id': account.get('user_id'),
+            'login_pending': bool(db_phone),
         }
 
     # Worker offline → nobody holds the session, a live check is safe
@@ -209,7 +298,7 @@ def get_status() -> dict:
             return {
                 'authorized': bool(authorized),
                 'credentials': True,
-                'phone': getattr(me, 'phone', None) or _PHONE,
+                'phone': getattr(me, 'phone', None) or db_phone or _PHONE,
                 'username': getattr(me, 'username', None) or '',
                 'first_name': getattr(me, 'first_name', None) or '',
                 'user_id': getattr(me, 'id', None),
@@ -229,6 +318,7 @@ def get_status() -> dict:
     info['restarts'] = stats.get('restarts', 0)
     info['last_error'] = stats.get('last_error', '')
     info['last_error_ts'] = stats.get('last_error_ts')
+    info['login_pending'] = bool(db_phone)
     return info
 
 
@@ -239,8 +329,6 @@ def start_phone(phone: str) -> dict:
     phone = (phone or '').strip()
     if not re.match(r'^\+?[0-9]{7,15}$', phone):
         return {'ok': False, 'detail': "Telefon raqam noto'g'ri formatda (masalan +998901234567)"}
-
-    global _PHONE, _PHONE_CODE_HASH, _NEEDS_PASSWORD
 
     async def _start():
         client, api_id = await _make_client()
@@ -270,21 +358,15 @@ def start_phone(phone: str) -> dict:
     if not result.get('ok'):
         return result
 
-    with _LOCK:
-        _PHONE = phone
-        _PHONE_CODE_HASH = result.get('phone_code_hash', '')
-        _NEEDS_PASSWORD = False
+    _set_login_state(phone, result.get('phone_code_hash', ''), False)
     return {'ok': True, 'detail': 'Tasdiqlash kodi Telegram/SMS orqali yuborildi. Kodni kiriting.'}
 
 
 def verify_code(code: str) -> dict:
     """Sign in with the code. Returns ok / needs_password / error."""
-    global _PHONE, _PHONE_CODE_HASH, _NEEDS_PASSWORD
     code = (code or '').strip()
 
-    with _LOCK:
-        phone = _PHONE
-        phone_code_hash = _PHONE_CODE_HASH
+    phone, phone_code_hash, _needs_2fa = _get_login_state()
 
     if not phone:
         return {'ok': False, 'detail': 'Avval telefon raqamni kiriting va "Kod olish"ni bosing.'}
@@ -310,8 +392,7 @@ def verify_code(code: str) -> dict:
     except Exception as exc:
         from telethon.errors import SessionPasswordNeededError
         if isinstance(exc, SessionPasswordNeededError):
-            with _LOCK:
-                _NEEDS_PASSWORD = True
+            _set_login_state(phone, phone_code_hash, True)
             return {'ok': False, 'needs_password': True,
                     'detail': 'Akkauntda ikki bosqichli himoya (2FA) yoqilgan — parolni kiriting.'}
         err = type(exc).__name__.lower()
@@ -323,10 +404,7 @@ def verify_code(code: str) -> dict:
         return {'ok': False, 'detail': f"Kirish amalga oshmadi ({type(exc).__name__})"}
 
     if result.get('ok'):
-        with _LOCK:
-            _PHONE = ''
-            _PHONE_CODE_HASH = ''
-            _NEEDS_PASSWORD = False
+        _clear_login_state()
         _sync_session_to_db()
         _restart_worker()
     return result
@@ -334,12 +412,11 @@ def verify_code(code: str) -> dict:
 
 def verify_password(password: str) -> dict:
     """Second step for 2FA-enabled accounts."""
-    global _PHONE, _PHONE_CODE_HASH, _NEEDS_PASSWORD
     password = password or ''
 
-    with _LOCK:
-        if not _NEEDS_PASSWORD:
-            return {'ok': False, 'detail': 'Parol so‘ralmagan. Avval kod bilan kirishni boshlang.'}
+    phone, phone_code_hash, needs_2fa = _get_login_state()
+    if not needs_2fa:
+        return {'ok': False, 'detail': 'Parol so‘ralmagan. Avval kod bilan kirishni boshlang.'}
 
     async def _do():
         client, _ = await _make_client()
@@ -365,10 +442,7 @@ def verify_password(password: str) -> dict:
         return {'ok': False, 'detail': f"Parol qabul qilinmadi ({type(exc).__name__})"}
 
     if result.get('ok'):
-        with _LOCK:
-            _PHONE = ''
-            _PHONE_CODE_HASH = ''
-            _NEEDS_PASSWORD = False
+        _clear_login_state()
         _sync_session_to_db()
         _restart_worker()
     return result
@@ -446,12 +520,8 @@ def logout() -> dict:
                     removed = True
     except Exception as exc:
         logger.warning('session delete failed: %s', exc)
-    with _LOCK:
-        global _PHONE, _PHONE_CODE_HASH, _NEEDS_PASSWORD
-        _PHONE = ''
-        _PHONE_CODE_HASH = ''
-        _NEEDS_PASSWORD = False
-    _kill_worker()
+    _clear_login_state()
+    _kill_worker_crossplatform()
     return {'ok': True, 'removed': removed,
             'detail': 'Session o‘chirildi. Endi boshqa akkaunt bilan kirishingiz mumkin.'}
 
@@ -459,32 +529,21 @@ def logout() -> dict:
 # ── worker (supervisor) integration ───────────────────────────────────────
 
 def _kill_worker() -> None:
-    """Kill user_client.py child processes (NOT the supervisor).
-
-    Uses PowerShell CIM (not wmic — removed on Windows 11 24H2+).
-    """
-    ps = (
-        "Get-CimInstance Win32_Process | "
-        "Where-Object { $_.CommandLine -match 'user_client\\.py' -and "
-        "$_.CommandLine -notmatch 'supervisor' } | "
-        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "
-        "Write-Output $_.ProcessId }"
-    )
-    try:
-        out = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', ps],
-            capture_output=True, text=True, timeout=15,
-        ).stdout or ''
-    except Exception as exc:
-        logger.warning('kill worker (powershell) failed: %s', exc)
-        return
-    for line in out.splitlines():
-        line = line.strip()
-        if line.isdigit():
-            logger.info('user_client worker killed (pid %s)', line)
+    """Cross-platform kill of user_client.py worker processes."""
+    _kill_worker_crossplatform()
 
 
 def _restart_worker() -> None:
     """After a successful login, restart the worker so it picks up the new
     session immediately (the supervisor auto-restarts it within ~5s)."""
-    _kill_worker()
+    _kill_worker_crossplatform()
+    # Cloud (Linux): cloud_launcher rc=5 holatida 300s kutar edi. Flag fayl
+    # yaratamiz — launcher buni ko'rib darhol qayta ishga tushiradi.
+    try:
+        flag = os.path.join(BASE_DIR, 'sessions', '.restart_requested')
+        os.makedirs(os.path.dirname(flag), exist_ok=True)
+        with open(flag, 'w') as f:
+            f.write(str(time.time()))
+        logger.info('worker restart flag yaratildi (cloud launcher uchun)')
+    except Exception as exc:
+        logger.warning('restart flag yozilmadi: %s', exc)
