@@ -21,6 +21,7 @@ XAVFSIZLIK:
 import json
 import logging
 import re
+import time
 import urllib.request
 
 from django.utils import timezone
