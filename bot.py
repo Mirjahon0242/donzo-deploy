@@ -116,21 +116,29 @@ def _report_bot_error_to_staff(kind: str, msg: str):
     Fire-and-forget: logging hech qachon bloklanmaydi yoki buzilmaydi.
     Throttle: bir xil turdagi xato 10 daqiqada bir marta xabar qilinadi.
     """
-    try:
-        from apps.security.ai_ops import report_error_to_staff
-        report_error_to_staff(
-            {
-                'kind': 'bot_polling',
-                'component': f'bot.py (polling {kind})',
-                'error_code': kind,
-                'detail': msg[:300],
-                'extra': {'polling_kind': kind},
-            },
-            throttle_key=f'bot_{kind}',
-            throttle_seconds=600,
-        )
-    except Exception:
-        pass  # hech qachon logging'ni buzmaydi
+    # PollingErrorHandler async kontekstdan chaqiradi — ORM chaqiruvlari
+    # (Setting.get_setting, AuditLog) async kontekstda SynchronousOnlyOperation
+    # tashlaydi. Shuning uchun hisobot alohida thread'da ishlaydi.
+    import threading
+
+    def _run():
+        try:
+            from apps.security.ai_ops import report_error_to_staff
+            report_error_to_staff(
+                {
+                    'kind': 'bot_polling',
+                    'component': f'bot.py (polling {kind})',
+                    'error_code': kind,
+                    'detail': msg[:300],
+                    'extra': {'polling_kind': kind},
+                },
+                throttle_key=f'bot_{kind}',
+                throttle_seconds=600,
+            )
+        except Exception:
+            pass  # hech qachon logging'ni buzmaydi
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _heartbeat_loop():
