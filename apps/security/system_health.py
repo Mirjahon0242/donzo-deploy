@@ -203,6 +203,28 @@ def check_user_client() -> dict:
         detail = f'heartbeat {int(age_s)}s avval' if ok else 'heartbeat eskirgan'
         return {'name': 'User Client', 'port': '-', 'status': 'ok' if ok else 'down',
                 'detail': detail}
+    # CLOUD: stats fayli bo'lmasa (fresh container) — Neon DB'dagi sessiya
+    # va login holatiga qaraymiz. Sessiya bor + login kutilmayotgan bo'lsa
+    # worker qayta boshlanishi mumkin; sessiya yo'q yoki login_pending
+    # bo'lsa — qayta kirish kerakligini aniq ko'rsatamiz.
+    if IS_CLOUD:
+        try:
+            from apps.settings_app.models import Setting
+            b64 = Setting.get_setting('user_client_session_b64', '') or ''
+            pending = bool(Setting.get_setting('user_client_login_phone', '') or '')
+            detail = 'sessiya Neon DB\'da'
+            if not b64:
+                return {'name': 'User Client', 'port': '-', 'status': 'down',
+                        'detail': 'sessiya yo\'q — User Client panelida qayta kirish kerak'}
+            if pending:
+                return {'name': 'User Client', 'port': '-', 'status': 'down',
+                        'detail': 'login jarayonda — kod kiritilishini kutyapti'}
+            # Sessiya bor, lekin worker heartbeat'i yo'q — bloklangan yoki
+            # worker hali ishga tushmagan bo'lishi mumkin.
+            return {'name': 'User Client', 'port': '-', 'status': 'down',
+                    'detail': 'sessiya bor, worker heartbeat yo\'q (bloklangan bo\'lishi mumkin)'}
+        except Exception:
+            pass
     ok = _port_open(USER_CLIENT_PORT)
     return {'name': 'User Client', 'port': USER_CLIENT_PORT,
             'status': 'ok' if ok else 'down',
