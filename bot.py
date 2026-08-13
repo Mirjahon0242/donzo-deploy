@@ -911,7 +911,7 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bump(updates=1, messages=1, command='ai')
     try:
-        thinking = await msg.reply_html("🤖 <b>DONZO AI</b> — o'ylayapman... (5-25 soniya)")
+        thinking = await msg.reply_html("🤖 <b>DONZO AI</b> — tahlil qilyapman, bir zum...")
     except Exception:
         thinking = None
 

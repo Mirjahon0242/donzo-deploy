@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """Staff AI (staff guruhi yordamchisi) testlari — DONZO."""
+import json
+import time
 import unittest
 
 from django.test import TestCase
@@ -71,3 +73,43 @@ class StaffAiTests(TestCase):
             r = staff_ai.staff_chat('savol', 'ai_user')
         self.assertIn('ok', r)
         self.assertFalse(r['ok'])
+
+    def test_greeting_gets_instant_jarvis_answer(self):
+        # Salomlashish Gemini'siz tezkor javob oladi (JARVIS uslubi)
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': True, 'answer': 'GEMINI'}) as mock_call:
+            r = staff_ai.staff_chat('Salom!', 'ai_user')
+            self.assertTrue(r['ok'])
+            self.assertIn('ustoz', r['answer'])
+            mock_call.assert_not_called()  # Gemini chaqirilmadi
+        # Variantlar
+        for g in ['Assalomu alaykum', 'hey', 'Qalaysiz?', 'Hi', 'Bormisiz']:
+            with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                            return_value={'ok': True, 'answer': 'GEMINI'}):
+                r = staff_ai.staff_chat(g, 'ai_user')
+                self.assertTrue(r['ok'], g)
+
+    def test_greeting_does_not_consume_throttle(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        # Limitni to'ldiramiz
+        Setting.set_setting('staff_ai_throttle_ai_user',
+                            json.dumps([time.time()] * staff_ai.THROTTLE_LIMIT))
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': True, 'answer': 'GEMINI'}) as mock_call:
+            r = staff_ai.staff_chat('Salom!', 'ai_user')
+            self.assertTrue(r['ok'])  # Throttle'ga qaramay javob beradi
+            mock_call.assert_not_called()
+
+    def test_non_greeting_hits_throttle(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('staff_ai_throttle_ai_user',
+                            json.dumps([time.time()] * staff_ai.THROTTLE_LIMIT))
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': True, 'answer': 'GEMINI'}):
+            r = staff_ai.staff_chat('karta qaysi?', 'ai_user')
+            self.assertFalse(r['ok'])
+            self.assertEqual(r['error'], 'throttled')
