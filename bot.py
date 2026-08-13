@@ -37,7 +37,7 @@ django.setup()
 from asgiref.sync import sync_to_async
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.error import InvalidToken
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 from apps.settings_app.models import Setting
 from apps.users.models import User
@@ -866,6 +866,71 @@ async def _suspicious_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
 
+async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Staff guruhida botga reply / @-mention / shaxsiy xabar → DONZO AI javob.
+
+    Faqat staff (super_admin/admin/operator/support) uchun. Boshqalar indamay
+    o'tkazib yuboriladi — guruhda hech narsa sizib chiqmaydi. Javob faqat
+    MA'LUMOT — hech qachon pul/holat o'zgartirmaydi.
+    """
+    msg = update.effective_message
+    user = update.effective_user
+    if msg is None or user is None or not msg.text:
+        return
+    text = (msg.text or '').strip()
+    if not text or text.startswith('/'):
+        return
+
+    # Trigger: botga reply / bot @-mention / shaxsiy chat
+    is_reply_to_bot = False
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        rfu = msg.reply_to_message.from_user
+        try:
+            is_reply_to_bot = rfu.is_bot and rfu.id == context.bot.id
+        except Exception:
+            is_reply_to_bot = rfu.is_bot
+    bot_username = ''
+    try:
+        bot_username = context.bot.username or ''
+    except Exception:
+        bot_username = ''
+    mentioned = bool(bot_username) and f'@{bot_username.lower()}' in text.lower()
+    is_private = bool(msg.chat) and msg.chat.type == 'private'
+    if not (is_reply_to_bot or mentioned or is_private):
+        return
+
+    # Faqat staff
+    db_user = await db_user_by_tg(str(user.id))
+    if db_user is None or db_user.role not in STAFF_ROLES:
+        return
+
+    if mentioned and bot_username:
+        text = re.sub(rf'@{re.escape(bot_username)}\b', '', text, flags=re.IGNORECASE).strip()
+    if not text:
+        text = 'Salom! DONZO tizimi haqida nima bilmoqchisiz?'
+
+    bump(updates=1, messages=1, command='ai')
+    try:
+        thinking = await msg.reply_html("🤖 <b>DONZO AI</b> — o'ylayapman... (5-25 soniya)")
+    except Exception:
+        thinking = None
+
+    from apps.security import staff_ai
+    result = await sync_to_async(staff_ai.staff_chat)(text, db_user.username or str(user.id))
+    answer = result.get('answer') or 'Javob berilmadi.'
+    final = f"🤖 <b>DONZO AI</b>\n\n{staff_ai.escape_html(answer)}"
+    if thinking is not None:
+        try:
+            await thinking.edit_text(final, parse_mode='HTML')
+            return
+        except Exception:
+            pass
+    try:
+        await msg.reply_html(final)
+    except Exception:
+        pass
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline button clicks (balance / orders / security / suspicious)."""
     query = update.callback_query
@@ -930,6 +995,8 @@ def main():
     application.add_handler(CommandHandler('togrila', togrila_command))
     application.add_handler(CommandHandler('restart', restart_command))
     application.add_handler(CommandHandler('tunnel', tunnel_command))
+    # DONZO AI — staff guruhida botga reply / @-mention / shaxsiy xabar
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, staff_ai_handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
     # ── Token validation (getMe) — records valid/invalid so the admin
