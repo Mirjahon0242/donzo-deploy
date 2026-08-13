@@ -414,7 +414,10 @@ class UserClientAuthVerifyView(APIView):
         from . import user_client_auth
         code = (request.data.get('code') or '').strip()
         result = user_client_auth.verify_code(code)
-        code_ = status.HTTP_200_OK if result.get('ok') else status.HTTP_400_BAD_REQUEST
+        # needs_password xato emas — kod TO'G'RI, keyingi qadam (2FA parol).
+        # 400 bo'lsa frontend catch'ga tushib 'kod tekshirilmadi' degan noto'g'ri
+        # xabar ko'rsatardi — 200 qaytarib oqimni aniq qilamiz.
+        code_ = status.HTTP_200_OK if (result.get('ok') or result.get('needs_password')) else status.HTTP_400_BAD_REQUEST
         return Response(result, status=code_)
 
 
