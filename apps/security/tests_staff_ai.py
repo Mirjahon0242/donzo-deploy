@@ -113,3 +113,82 @@ class StaffAiTests(TestCase):
             r = staff_ai.staff_chat('karta qaysi?', 'ai_user')
             self.assertFalse(r['ok'])
             self.assertEqual(r['error'], 'throttled')
+
+    # ── SUHBAT OQIMI (belgilangan tartib) testlari ────────────────────────
+
+    def test_conv_advance_flow_order(self):
+        # start → answer → detail → done → start (belgilangan tartib)
+        self.assertEqual(staff_ai._conv_advance('start', 'karta holati qanday?'), 'answer')
+        self.assertEqual(staff_ai._conv_advance('answer', 'batafsil ko\'rsat'), 'detail')
+        self.assertEqual(staff_ai._conv_advance('detail', 'rahmat, yetarli'), 'done')
+        self.assertEqual(staff_ai._conv_advance('done', 'yana savol'), 'start')
+
+    def test_conv_advance_ending_words(self):
+        # 'rahmat / tamom / yetarli' → done bosqichiga olib boradi
+        for w in ['rahmat', 'tamom', 'yetarli', "bo'ldi", 'hammasi shu']:
+            self.assertEqual(staff_ai._conv_advance('answer', w), 'done', w)
+            self.assertEqual(staff_ai._conv_advance('detail', w), 'done', w)
+
+    def test_conv_advance_detail_words(self):
+        # 'batafsil / ko'rsat / davom' → detail bosqichiga o'tadi
+        for w in ['batafsil ko\'rsat', 'davom et', 'qarangchi']:
+            self.assertEqual(staff_ai._conv_advance('answer', w), 'detail', w)
+
+    def test_conv_save_load_roundtrip(self):
+        # Suhbat holati Setting'da saqlanadi va qayta o'qiladi
+        data = {'step': 'detail', 'history': [{'role': 'user', 'text': 'salom'}], 'ts': time.time()}
+        staff_ai._conv_save('flow_user', data)
+        loaded = staff_ai._conv_load('flow_user')
+        self.assertEqual(loaded['step'], 'detail')
+        self.assertEqual(loaded['history'][0]['text'], 'salom')
+
+    def test_conv_expires_after_ttl(self):
+        # 10 daqiqadan ko'p harakatsizlik → yangi suhbat (start bosqichi)
+        # (Setting'ga to'g'ridan-to'g'ri yozamiz — _conv_save ts'ni yangilaydi)
+        old = {'step': 'detail', 'history': [], 'ts': time.time() - staff_ai.CONV_TTL_SECONDS - 5}
+        Setting.set_setting(staff_ai.CONV_KEY_PREFIX + 'old_user', json.dumps(old))
+        loaded = staff_ai._conv_load('old_user')
+        self.assertEqual(loaded['step'], 'start')
+
+    def test_staff_chat_advances_and_remembers(self):
+        # To'liq oqim: start → answer → detail; tarix saqlanadi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('staff_ai_conv_flow2_user', '')
+        with unittest.mock.patch.object(
+                staff_ai, '_call_gemini',
+                return_value={'ok': True, 'answer': 'OK'}):
+            r1 = staff_ai.staff_chat('holat qanday?', 'flow2_user')
+            self.assertTrue(r1['ok'])
+        conv1 = staff_ai._conv_load('flow2_user')
+        self.assertEqual(conv1['step'], 'answer')  # start → answer
+        self.assertEqual(len(conv1['history']), 2)  # user + assistant
+        with unittest.mock.patch.object(
+                staff_ai, '_call_gemini',
+                return_value={'ok': True, 'answer': 'Batafsil: OK'}):
+            r2 = staff_ai.staff_chat('batafsil ko\'rsat', 'flow2_user')
+            self.assertTrue(r2['ok'])
+        conv2 = staff_ai._conv_load('flow2_user')
+        self.assertEqual(conv2['step'], 'detail')  # answer → detail
+        self.assertEqual(len(conv2['history']), 4)
+        # Prompt tarixni o'z ichiga olgan (Gemini chaqiruvi prompt'ida)
+        with unittest.mock.patch.object(
+                staff_ai, '_call_gemini',
+                return_value={'ok': True, 'answer': 'Xulosa'}):
+            r3 = staff_ai.staff_chat('rahmat, yetarli', 'flow2_user')
+            self.assertTrue(r3['ok'])
+        conv3 = staff_ai._conv_load('flow2_user')
+        self.assertEqual(conv3['step'], 'done')  # detail → done
+
+    def test_staff_chat_history_limits(self):
+        # Tarix cheksiz o'smaydi — CONV_HISTORY_MAX bilan cheklanadi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('staff_ai_conv_flow3_user', '')
+        with unittest.mock.patch.object(
+                staff_ai, '_call_gemini',
+                return_value={'ok': True, 'answer': 'ok'}):
+            for i in range(15):
+                staff_ai.staff_chat(f'savol {i}', 'flow3_user')
+        conv = staff_ai._conv_load('flow3_user')
+        self.assertLessEqual(len(conv['history']), staff_ai.CONV_HISTORY_MAX * 2)
