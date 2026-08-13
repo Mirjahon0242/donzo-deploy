@@ -60,6 +60,49 @@ EXIT_NOT_AUTHORIZED = 4
 EXIT_SESSION_BLOCKED = 5  # AuthKeyDuplicatedError — qayta kirish kerak
 
 
+def _session_has_auth_key(path: str) -> bool:
+    """SQLite Telethon sessiya faylida auth_key bormi? (yaroqli sessiya)."""
+    try:
+        import sqlite3
+        con = sqlite3.connect(path)
+        try:
+            row = con.execute(
+                'SELECT auth_key FROM sessions LIMIT 1'
+            ).fetchone()
+        finally:
+            con.close()
+        return bool(row and row[0] and any(row[0]))
+    except Exception:
+        return False
+
+
+def _pull_session_from_db() -> bool:
+    """Neon DB'dagi `user_client_session_b64` sessiyasini lokal faylga yozadi.
+
+    Qayta kirish (login wizard) Neon'ga yozadi, lekin kontener ichidagi
+    fayl eski/bloklangan bo'lib qolishi mumkin. Worker buni har startda
+    tekshiradi: lokal fayl yo'q yoki auth_key'siz bo'lsa — Neon'dan
+    qayta tiklaydi (self-heal).
+    """
+    try:
+        import base64
+        from apps.settings_app.models import Setting
+        b64 = Setting.get_setting('user_client_session_b64', '') or ''
+        if not b64:
+            return False
+        data = base64.b64decode(b64)
+        os.makedirs(SESSION_DIR, exist_ok=True)
+        tmp = SESSION_FILE + '.dbpull'
+        with open(tmp, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, SESSION_FILE)
+        _log(f'Sessiya Neon DB\'dan qayta tiklandi ({len(data)} bayt)')
+        return True
+    except Exception as exc:
+        _log(f'Sessiyani Neon\'dan tiklash xatosi: {type(exc).__name__}: {str(exc)[:120]}')
+        return False
+
+
 def _sync_session_to_db():
     """Joriy sessiya faylini Neon DB'ga saqlaydi.
 
@@ -119,6 +162,11 @@ async def main():
         sys.exit(EXIT_NO_CREDENTIALS)
 
     os.makedirs(SESSION_DIR, exist_ok=True)
+    # Self-heal: lokal fayl yo'q yoki auth_key'siz bo'lsa — Neon'dan tiklaymiz.
+    if not os.path.exists(SESSION_FILE) or not _session_has_auth_key(SESSION_FILE):
+        _log('Lokal sessiya yo\'q/yaroqsiz — Neon DB\'dan tiklanmoqda...')
+        _pull_session_from_db()
+
     client = TelegramClient(SESSION_FILE, int(api_id), api_hash)
 
     try:
@@ -133,11 +181,29 @@ async def main():
         sys.exit(EXIT_NOT_AUTHORIZED)
 
     if not await client.is_user_authorized():
-        _log("XATO: Session yo'q yoki ro'yxatdan o'tmagan. "
-             "Admin panel → To'lov nazorati → User Client orqali kirishni bajaring "
-             "(telefon raqam → kod → 2FA parol).")
+        # Self-heal 2: Neon'dagi sessiya valid bo'lishi mumkin — bir marta
+        # qayta yuklab, qayta urinamiz. Faqat shundan keyin taslim bo'lamiz.
+        _log("Sessiya avtorizatsiyadan o'tmadi — Neon DB'dan qayta yuklab urinilmoqda...")
         await client.disconnect()
-        sys.exit(EXIT_NOT_AUTHORIZED)
+        pulled = _pull_session_from_db()
+        if pulled:
+            client = TelegramClient(SESSION_FILE, int(api_id), api_hash)
+            try:
+                await client.connect()
+            except Exception as exc:
+                if type(exc).__name__ == 'AuthKeyDuplicatedError':
+                    _log("SESSIYA BLOKLANGAN (ikki IP'da bir vaqtda ishlatilgan). "
+                         "Admin panel -> To'lov nazorati -> User Client orqali qayta kirish kerak "
+                         "(telefon raqam -> kod -> parol).")
+                    sys.exit(EXIT_SESSION_BLOCKED)
+                _log(f"XATO: Telegramga ulanishda xatolik: {type(exc).__name__}")
+                sys.exit(EXIT_NOT_AUTHORIZED)
+        if not await client.is_user_authorized():
+            _log("XATO: Session yo'q yoki ro'yxatdan o'tmagan. "
+                 "Admin panel → To'lov nazorati → User Client orqali kirishni bajaring "
+                 "(telefon raqam → kod → 2FA parol).")
+            await client.disconnect()
+            sys.exit(EXIT_NOT_AUTHORIZED)
 
     await client.start()
     me = await client.get_me()

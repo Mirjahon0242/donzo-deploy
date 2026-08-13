@@ -108,6 +108,15 @@ def _supervise(name, cmd):
     backoff = 5
     restart_flag = os.path.join(BASE_DIR, 'sessions', '.restart_requested')
     while not _stop.is_set():
+        # Self-heal: USERCLIENT har start oldidan sessiyani Neon DB'dan
+        # qayta tiklaymiz. Login wizard Neon'ga yozgan yangi sessiyani
+        # worker darhol oladi; kontener ichidagi eski/buzilgan fayl
+        # ustidan yoziladi. Faqat launcher startida emas — har startda.
+        if name.upper() == 'USERCLIENT':
+            try:
+                _session_bootstrap()
+            except Exception as exc:
+                _log(name, f'sessiya bootstrap xatosi: {type(exc).__name__}: {str(exc)[:120]}')
         proc = _spawn(cmd, name)
         if proc is None:
             _stop.wait(backoff)

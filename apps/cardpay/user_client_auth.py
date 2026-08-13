@@ -327,8 +327,43 @@ def get_status() -> dict:
     # very same SQLite session file — a concurrent open from get_status
     # (frontend polls every 30s) deadlocks it ("database is locked") and
     # surfaces as "kod tekshirilmadi". Report stats + pending login state.
+    #
+    # Agar Neon DB'da valid sessiya bo'lsa (login wizard yozgan) — foydalanuvchi
+    # KIRGAN, worker esa offline (self-heal jarayonida). "KIRILMAGAN" deyish
+    # noto'g'ri bo'lardi: authorized=True + worker_online=False ko'rsatamiz.
+    db_authorized = False
+    db_username = stats.get('account', {}).get('username') or ''
+    try:
+        from apps.settings_app.models import Setting
+        _b64 = Setting.get_setting('user_client_session_b64', '') or ''
+        if _b64:
+            import base64 as _b64mod
+            _data = _b64mod.b64decode(_b64)
+            import sqlite3 as _sqlite3
+            import tempfile as _tempfile
+            _fd, _path = _tempfile.mkstemp(suffix='.session')
+            try:
+                import os as _os
+                with _os.fdopen(_fd, 'wb') as _f:
+                    _f.write(_data)
+                _con = _sqlite3.connect(_path)
+                try:
+                    _row = _con.execute(
+                        'SELECT auth_key FROM sessions LIMIT 1'
+                    ).fetchone()
+                finally:
+                    _con.close()
+                db_authorized = bool(_row and _row[0] and any(_row[0]))
+            finally:
+                try:
+                    _os.remove(_path)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     info = {
-        'authorized': False,
+        'authorized': db_authorized,
         'credentials': True,
         'session_exists': session_exists,
         'worker_online': False,
@@ -337,10 +372,11 @@ def get_status() -> dict:
         'last_error': stats.get('last_error', ''),
         'last_error_ts': stats.get('last_error_ts'),
         'phone': db_phone or _PHONE,
-        'username': stats.get('account', {}).get('username') or '',
+        'username': db_username,
         'first_name': stats.get('account', {}).get('first_name') or '',
         'user_id': stats.get('account', {}).get('user_id'),
         'login_pending': bool(db_phone),
+        'session_source': 'neon' if db_authorized else 'none',
     }
     return info
 
