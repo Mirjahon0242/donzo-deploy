@@ -91,14 +91,32 @@ def _sweep_daily_resets():
 
     Cheap: one query filtered by period_started_at date. Ensures an
     exhausted card becomes eligible again the next morning without waiting
-    to be evaluated during rotation.
+    to be evaluated during rotation. The pre-reset counters are snapshotted
+    so the morning "KUNLIK LIMIT RESET" report can show what was reset.
     """
     from .models import PaymentCard
     today = timezone.now().date()
     stale = PaymentCard.objects.filter(auto_reset_daily=True).exclude(period_started_at__date=today)
+    snapshot = [
+        {
+            'tail': (c['card_number'][-4:] if len(c['card_number']) >= 4 else ''),
+            'holder': c['card_holder'],
+            'yesterday_amount': float(c['total_amount'] or 0),
+            'yesterday_transfers': c['transfers_count'],
+            'max_amount': float(c['max_amount'] or 0),
+            'max_transfers': c['max_transfers'],
+            'order_index': c['order_index'],
+        }
+        for c in stale.values(
+            'card_number', 'card_holder', 'total_amount', 'transfers_count',
+            'max_amount', 'max_transfers', 'order_index',
+        )
+    ]
     updated = stale.update(total_amount=0, transfers_count=0, period_started_at=timezone.now())
     if updated:
+        _store_reset_snapshot(snapshot, today)
         logger.info('Daily card counter reset applied to %d card(s)', updated)
+    return updated
 
 
 def get_active_card():
@@ -924,6 +942,135 @@ def send_health_report() -> bool:
         return _send_report(build_health_report())
     except Exception:
         logger.exception('health report send failed')
+        return False
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# KUNLIK LIMIT RESET hisoboti (ertalab staff guruhiga, kuniga bir marta)
+# ────────────────────────────────────────────────────────────────────────────
+
+_CARD_RESET_SNAPSHOT_KEY = 'card_daily_reset_snapshot'
+_CARD_RESET_REPORT_MARKER = 'card_daily_reset_report_sent_date'
+
+
+def _store_reset_snapshot(cards: list, date_) -> None:
+    """Reset vaqtidagi har bir karta holatini saqlaydi (ertalabki hisobot uchun)."""
+    try:
+        import json
+        from apps.settings_app.models import Setting
+        Setting.set_setting(_CARD_RESET_SNAPSHOT_KEY, json.dumps({
+            'date': str(date_),
+            'resets': cards,
+        }, ensure_ascii=False))
+    except Exception:
+        logger.exception('card reset snapshot saqlanmadi')
+
+
+def _fmt_limit(max_amount, max_transfers) -> str:
+    """Karta limitini chiroyli matnga aylantiradi: '5 000 000 so'm + 30 ta' / 'cheksiz'."""
+    parts = []
+    if max_amount:
+        parts.append(f"{float(max_amount):,.0f} so'm")
+    if max_transfers:
+        parts.append(f"{int(max_transfers)} ta")
+    return ' + '.join(parts) if parts else 'cheksiz'
+
+
+def _fmt_remaining(card) -> str:
+    """Faol kartaning bugungi qoldiq limiti."""
+    parts = []
+    if card.max_amount:
+        parts.append(f"{float(card.max_amount - card.total_amount):,.0f} so'm qoldi")
+    if card.max_transfers:
+        parts.append(f"{int(card.max_transfers - card.transfers_count)} ta qoldi")
+    return ' | '.join(parts) if parts else 'cheksiz'
+
+
+def build_card_daily_reset_report() -> str:
+    """KUNLIK LIMIT RESET hisoboti — kechagi ishlatish + bugungi yangi holat."""
+    import json
+    from .models import PaymentCard
+    from apps.settings_app.models import Setting
+
+    _sweep_daily_resets()  # hali bajarilmagan bo'lsa, endi bajariladi
+    today = timezone.now().date()
+
+    raw = Setting.get_setting(_CARD_RESET_SNAPSHOT_KEY, '')
+    resets = []
+    try:
+        data = json.loads(raw) if raw else {}
+        if data.get('date') == str(today):
+            resets = data.get('resets') or []
+    except Exception:
+        resets = []
+
+    lines = []
+    if resets:
+        lines.append('🔄 <b>Yarim tunda avtomatik tiklandi:</b>')
+        for r in resets:
+            lines.append(
+                f"  • 💳 ***{r.get('tail') or '—'} ({r.get('holder') or '—'}) — kecha "
+                f"<b>{float(r.get('yesterday_amount') or 0):,.0f}</b> so'm "
+                f"({r.get('yesterday_transfers') or 0} ta) → <b>0</b> ga tiklandi"
+                f"  <i>(limit: {_fmt_limit(r.get('max_amount'), r.get('max_transfers'))})</i>"
+            )
+    else:
+        lines.append('🔄 Kechagi kun kartalar limitga yetmagan — tiklash talab qilinmadi.')
+
+    no_reset = list(PaymentCard.objects.filter(
+        enabled=True, auto_reset_daily=False,
+    ).order_by('order_index', 'id'))
+    if no_reset:
+        lines.append('\n🚫 <b>Kunlik tiklanmaydigan kartalar (hisoblagich o\'tadi):</b>')
+        for c in no_reset:
+            lines.append(
+                f"  • 💳 ***{c.card_tail} ({c.card_holder or '—'}) — joriy "
+                f"<b>{float(c.total_amount or 0):,.0f}</b> so'm ({c.transfers_count} ta) / "
+                f"limit {_fmt_limit(c.max_amount, c.max_transfers)}"
+            )
+
+    cards = list(PaymentCard.objects.filter(enabled=True).order_by('order_index', 'id'))
+    active = next((c for c in cards if c.is_active), None)
+    lines.append('\n📌 <b>Bugungi holat:</b>')
+    if active is None:
+        lines.append("  ❌ <b>Faol karta yo'q!</b> — Admin panel → Kartalar bo'limida qo'shing.")
+    else:
+        status = '❌ LIMITDA' if active.is_exhausted else '✅ faol'
+        lines.append(f"  {status} — 💳 ***{active.card_tail} ({active.card_holder or '—'})")
+        lines.append(
+            f"     Joriy: <b>{float(active.total_amount or 0):,.0f}</b> so'm / "
+            f"{active.transfers_count} ta | Qoldiq: {_fmt_remaining(active)}"
+        )
+        others_exhausted = [c for c in cards if c.is_exhausted and not c.is_active]
+        if others_exhausted:
+            lines.append('     ⚠️ Zaxiradagi limitda: ' + ', '.join(
+                '***' + c.card_tail for c in others_exhausted))
+
+    local = timezone.localtime()
+    return (
+        f"🔄 <b>DONZO | KUNLIK LIMIT RESET</b> — {local.strftime('%d.%m.%Y')}\n\n"
+        + '\n'.join(lines)
+        + f"\n\n👛 Jami kartalar: <b>{len(cards)}</b>"
+    )
+
+
+def send_daily_card_reset_report() -> bool:
+    """Kunlik limit reset hisobotini kuniga bir marta (ertalab) yuboradi.
+
+    Marker Setting orqali takror yuborilmaydi; muvaffaqiyatsiz bo'lsa keyingi
+    sikl (15 daqiqadan keyin) qayta urinadi.
+    """
+    try:
+        from apps.settings_app.models import Setting
+        today = timezone.now().date().isoformat()
+        if Setting.get_setting(_CARD_RESET_REPORT_MARKER, '') == today:
+            return False  # bugun allaqachon yuborilgan
+        ok = _send_report(build_card_daily_reset_report())
+        if ok:
+            Setting.set_setting(_CARD_RESET_REPORT_MARKER, today)
+        return ok
+    except Exception:
+        logger.exception('daily card reset report failed')
         return False
 
 

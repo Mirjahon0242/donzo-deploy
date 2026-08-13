@@ -9,6 +9,7 @@ Covers:
   • daily counter reset
   • get_settings returns the active card's number/holder
 """
+import unittest
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -177,3 +178,83 @@ class PaymentCardRotationTests(TestCase):
         services.register_card_payment('💳 ***1111', Decimal('150000'))
         self.c1.refresh_from_db()
         self.assertTrue(self.c1.is_active)  # stays active, staff alerted
+
+
+class DailyResetReportTests(TestCase):
+    """KUNLIK LIMIT RESET hisoboti — snapshot, format, kuniga bir marta."""
+
+    def setUp(self):
+        self.c1 = PaymentCard.objects.create(
+            card_number='8600111111111111', is_active=True,
+            max_amount=Decimal('1000000'), max_transfers=50, order_index=1,
+        )
+        self.c2 = PaymentCard.objects.create(
+            card_number='8600222222222222', enabled=True,
+            max_amount=Decimal('500000'), max_transfers=100, order_index=2,
+        )
+        Setting.set_setting(services._CARD_RESET_REPORT_MARKER, '')
+        Setting.set_setting(services._CARD_RESET_SNAPSHOT_KEY, '')
+
+    def _make_yesterday(self):
+        """c1 kecha ishlatilgan va period kechagi sanada."""
+        self.c1.total_amount = Decimal('850000')
+        self.c1.transfers_count = 40
+        self.c1.period_started_at = timezone.now() - timezone.timedelta(days=1, hours=2)
+        self.c1.save()
+
+    def test_sweep_stores_reset_snapshot(self):
+        self._make_yesterday()
+        updated = services._sweep_daily_resets()
+        self.assertEqual(updated, 1)
+        self.c1.refresh_from_db()
+        self.assertEqual(self.c1.total_amount, 0)
+        self.assertEqual(self.c1.transfers_count, 0)
+        import json
+        data = json.loads(Setting.get_setting(services._CARD_RESET_SNAPSHOT_KEY, ''))
+        self.assertEqual(data['date'], timezone.now().date().isoformat())
+        reset = data['resets'][0]
+        self.assertEqual(reset['tail'], '1111')
+        self.assertEqual(reset['yesterday_amount'], 850000.0)
+        self.assertEqual(reset['yesterday_transfers'], 40)
+
+    def test_build_report_shows_reset_and_active_card(self):
+        self._make_yesterday()
+        services._sweep_daily_resets()
+        text = services.build_card_daily_reset_report()
+        self.assertIn('KUNLIK LIMIT RESET', text)
+        self.assertIn('***1111', text)
+        self.assertIn('850,000', text)
+        self.assertIn('✅ faol', text)
+        self.assertIn('Qoldiq', text)
+
+    def test_build_report_no_reset_graceful(self):
+        # Hech narsa tiklanmagan — bo'sh holat ham yaxshi chiqadi
+        text = services.build_card_daily_reset_report()
+        self.assertIn('KUNLIK LIMIT RESET', text)
+        self.assertIn('tiklash talab qilinmadi', text)
+
+    def test_send_once_per_day(self):
+        self._make_yesterday()
+        with unittest.mock.patch('apps.cardpay.services._send_report', return_value=True) as m:
+            first = services.send_daily_card_reset_report()
+            second = services.send_daily_card_reset_report()
+        self.assertTrue(first)
+        self.assertFalse(second)  # marker — kuniga bir marta
+        self.assertEqual(m.call_count, 1)
+        self.assertEqual(
+            Setting.get_setting(services._CARD_RESET_REPORT_MARKER, ''),
+            timezone.now().date().isoformat(),
+        )
+
+    def test_send_retries_until_success(self):
+        self._make_yesterday()
+        with unittest.mock.patch('apps.cardpay.services._send_report', side_effect=[False, True]) as m:
+            first = services.send_daily_card_reset_report()
+            self.assertFalse(first)  # muvaffaqiyatsiz → marker qo'yilmaydi
+            second = services.send_daily_card_reset_report()
+            self.assertTrue(second)
+        self.assertEqual(m.call_count, 2)
+        self.assertEqual(
+            Setting.get_setting(services._CARD_RESET_REPORT_MARKER, ''),
+            timezone.now().date().isoformat(),
+        )
