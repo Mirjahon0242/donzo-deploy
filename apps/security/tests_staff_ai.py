@@ -225,10 +225,35 @@ class StaffAiTests(TestCase):
         with unittest.mock.patch.object(
                 staff_ai, '_call_gemini',
                 return_value={'ok': True, 'answer': 'ok'}):
-            for i in range(15):
+            for i in range(25):
                 staff_ai.staff_chat(f'savol {i}', 'flow3_user')
         conv = staff_ai._conv_load('flow3_user')
         self.assertLessEqual(len(conv['history']), staff_ai.CONV_HISTORY_MAX * 2)
+
+    def test_daily_context_included_in_prompt(self):
+        # AI prompt'iga kunlik kontekst (bugun nima bo'ldi) qo'shiladi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'OK'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            r = staff_ai.staff_chat('holat qanday?', 'flow4_user')
+            self.assertTrue(r['ok'])
+        p = captured.get('prompt', '')
+        self.assertIn('== TODAY', p)
+        self.assertIn('Yangi foydalanuvchilar', p)
+        # Tarix limiti 15 ga oshirildi
+        self.assertEqual(staff_ai.CONV_HISTORY_MAX, 15)
+
+    def test_daily_context_never_raises(self):
+        # _daily_context hech qachon exception tashlamaydi
+        out = staff_ai._daily_context()
+        self.assertIsInstance(out, str)
+        self.assertTrue(len(out) > 0)
 
     # ── MAXSUS STSENARIYLAR ────────────────────────────────────────────────
     def _mk_user(self, username, role):

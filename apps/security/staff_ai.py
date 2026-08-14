@@ -55,7 +55,7 @@ CONV_KEY_PREFIX = 'staff_ai_conv_'
 # 10 daqiqa harakatsizlikdan keyin suhbat yangidan boshlanadi.
 CONV_TTL_SECONDS = 10 * 60
 # Gemini'ga yuboriladigan tarix uzunligi (oxirgi N xabar).
-CONV_HISTORY_MAX = 8
+CONV_HISTORY_MAX = 15
 
 _PERSONA = """## SYSTEM PROMPT — SHAXSIY AI YORDAMCHI
 
@@ -868,6 +868,47 @@ def _conv_history_text(history: list) -> str:
     return '\n'.join(lines)
 
 
+def _daily_context() -> str:
+    """Bugun platformada nima bo'lgani — qisqa kunlik kontekst.
+
+    Xavfsiz: faqat agregat raqamlar (maxfiy emas). Xato bo'lsa ham hech
+    narsa buzmaydi — 'bugun ma'lumot yo'q' qaytaradi.
+    """
+    try:
+        from django.db.models import Sum, Count
+        from apps.orders.models import Order
+        from apps.cardpay.models import CardTopupRequest, SuspiciousPayment
+        from apps.users.models import User
+        from apps.audit_log.models import AuditLog
+        today = timezone.now().date()
+        parts = []
+        # Foydalanuvchilar
+        new_users = User.objects.filter(created_at__date=today).count()
+        parts.append(f"Yangi foydalanuvchilar: {new_users}")
+        # Buyurtmalar
+        orders_today = Order.objects.filter(created_at__date=today)
+        parts.append(f"Buyurtmalar: {orders_today.count()} ta "
+                     f"({orders_today.filter(status='completed').count()} bajarilgan, "
+                     f"{orders_today.filter(status='pending').count()} kutilmoqda)")
+        rev = orders_today.aggregate(t=Sum('total_price'))['t'] or 0
+        parts.append(f"Bugungi tushum: {float(rev):,.0f} so'm")
+        # To'lovlar
+        paid = CardTopupRequest.objects.filter(status='paid', paid_at__date=today)
+        parts.append(f"To'lovlar: {paid.count()} ta "
+                     f"({float(paid.aggregate(t=Sum('unique_amount'))['t'] or 0):,.0f} so'm)")
+        susp = SuspiciousPayment.objects.filter(created_at__date=today).count()
+        parts.append(f"Shubhali to'lovlar: {susp}")
+        # Audit hodisalari
+        try:
+            events = AuditLog.objects.filter(created_at__date=today).count()
+            parts.append(f"Audit hodisalari: {events}")
+        except Exception:
+            pass
+        return '\n'.join(parts)
+    except Exception:
+        return "(bugunlik ma'lumot o'qib bo'lmadi)"
+
+
 def _status_snippet() -> str:
     """Qisqa jonli status satri — AI har javob oxiriga qo'shadi.
 
@@ -1122,6 +1163,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         next_step = _conv_advance(step, q)
 
         context = _live_context()
+        daily = _daily_context()
         snippet = _status_snippet()
         who = 'owner (call him "ser")' if _is_owner(username) else f'staff member @{username}'
         prompt = (
@@ -1137,6 +1179,8 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             + who
             + "\n\n== STATUS SNIPPET (append this exact line at the END of your answer) ==\n"
             + snippet
+            + "\n\n== TODAY (what happened today on the platform) ==\n"
+            + daily
             + "\n\n== LIVE SYSTEM CONTEXT (refresh per question) ==\n"
             + context
             + "\n\n== STAFF QUESTION ==\n"
