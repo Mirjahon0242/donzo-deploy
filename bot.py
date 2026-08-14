@@ -976,6 +976,26 @@ def main():
     print("[BOT] Kutilmoqda... (Ctrl+C bilan to'xtatiladi)")
 
     application = Application.builder().token(token).build()
+
+    # ── Global error handler: PTB'ning "No error handlers are registered"
+    #    xatosi chiqmasligi uchun. Har qanday kutilmagan xato → stats faylga
+    #    yoziladi (admin panel "Bot holati"da ko'rinadi), bot ishdan to'xtamaydi.
+    async def _global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        try:
+            exc = getattr(context, 'error', None)
+            msg = _scrub_secrets(str(exc))[:300] if exc else 'Noma\'lum xato'
+            lower = msg.lower()
+            if 'conflict' in lower or '409' in msg:
+                kind = 'conflict_409'
+            elif 'networkerror' in lower or 'network error' in lower:
+                kind = 'network_error'
+            else:
+                kind = 'getupdates_error'
+            record_polling_error(kind, msg)
+        except Exception:
+            pass  # error handler hech qachon botni buzmaydi
+
+    application.add_error_handler(_global_error_handler)
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('balance', balance))
     application.add_handler(CommandHandler('orders', orders))
