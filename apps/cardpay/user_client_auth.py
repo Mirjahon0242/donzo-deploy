@@ -160,8 +160,10 @@ def _promote_login_session():
             pass
 
 # Bound every network operation — a stuck Telegram connection must never
-# hold an admin API request for minutes.
-OP_TIMEOUT = 30
+# hold an admin API request for minutes. Render'da Telethon birinchi
+# ulanishida DC discovery + TLS handshake sekin bo'lishi mumkin — 60s
+# qo'ydik (30s da "kod tekshirilmadi" sabab bo'lishi mumkin edi).
+OP_TIMEOUT = 60
 
 
 def _kill_worker_crossplatform() -> None:
