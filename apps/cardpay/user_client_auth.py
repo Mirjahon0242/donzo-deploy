@@ -112,14 +112,23 @@ def _sync_session_to_db(session_file=None):
     try:
         path = session_file or SESSION_FILE
         if not os.path.exists(path):
-            return
+            logger.warning('_sync_session_to_db: sessiya fayli yo\'q: %s', path)
+            return False
         with open(path, 'rb') as f:
             b64 = base64.b64encode(f.read()).decode('ascii')
         from apps.settings_app.models import Setting
         Setting.set_setting('user_client_session_b64', b64)
-        logger.info('Sessiya Neon DB\'ga sinxronlandi (%s belgi)', len(b64))
-    except Exception:
-        pass
+        # Qayta o'qib tasdiqlaymiz — yozilganini isbotlash (yashirin xatolarni
+        # bartaraf qilish uchun).
+        check = Setting.get_setting('user_client_session_b64', '') or ''
+        if check == b64:
+            logger.info('Sessiya Neon DB\'ga sinxronlandi va tasdiqlandi (%s belgi)', len(b64))
+            return True
+        logger.error('_sync_session_to_db: yozilgan qiymat tasdiqlanmadi (len=%s vs %s)', len(check), len(b64))
+        return False
+    except Exception as exc:
+        logger.error('_sync_session_to_db XATO: %s: %s', type(exc).__name__, str(exc)[:200])
+        return False
 
 
 def _promote_login_session():
@@ -129,17 +138,20 @@ def _promote_login_session():
     """
     try:
         if not os.path.exists(LOGIN_SESSION_FILE):
-            return
+            logger.warning('_promote_login_session: LOGIN_SESSION_FILE yo\'q — kirish yakunlanmagan')
+            return False
         tmp = SESSION_FILE + '.new'
         with open(LOGIN_SESSION_FILE, 'rb') as f:
             data = f.read()
         with open(tmp, 'wb') as f:
             f.write(data)
         os.replace(tmp, SESSION_FILE)
-        _sync_session_to_db(SESSION_FILE)
-        logger.info('Login sessiyasi asosiy sessiya fayliga ko\'chirildi')
+        ok = _sync_session_to_db(SESSION_FILE)
+        logger.info('Login sessiyasi asosiy sessiya fayliga ko\'chirildi (Neon sync=%s)', ok)
+        return ok
     except Exception as exc:
-        logger.warning('sessiyani ko\'chirishda xato: %s', exc)
+        logger.warning('sessiyani ko\'chirishda xato: %s: %s', type(exc).__name__, str(exc)[:200])
+        return False
     finally:
         try:
             if os.path.exists(LOGIN_SESSION_FILE):
@@ -463,16 +475,20 @@ def verify_code(code: str) -> dict:
             return {'ok': False, 'needs_password': True,
                     'detail': 'Akkauntda ikki bosqichli himoya (2FA) yoqilgan — parolni kiriting.'}
         err = type(exc).__name__.lower()
-        if 'invalid' in err or 'code' in err and 'expired' in err:
+        logger.warning('verify_code sign_in failed: %s: %s', type(exc).__name__, str(exc)[:200])
+        if 'invalid' in err or ('code' in err and 'expired' in err):
             return {'ok': False, 'detail': "Kod noto'g'ri yoki muddati o'tgan. Qayta urinib ko'ring yoki qayta kod oling."}
         if 'flood' in err:
             return {'ok': False, 'detail': 'Telegram vaqtincha chekladi. Birozdan so‘ng qayta urinib ko‘ring.'}
-        logger.warning('sign_in failed: %s', type(exc).__name__)
+        if 'timeout' in err:
+            return {'ok': False, 'detail': 'Telegram ulanish vaqti tugadi. Qayta urinib ko‘ring.'}
         return {'ok': False, 'detail': f"Kirish amalga oshmadi ({type(exc).__name__})"}
 
     if result.get('ok'):
         _clear_login_state()
-        _promote_login_session()
+        synced = _promote_login_session()
+        if not synced:
+            logger.error('KIRISH MUVaffaqiyatli LEKIN Neon\'ga saqlanmadi — worker eski sessiyada qoladi!')
         _restart_worker()
     return result
 
@@ -510,7 +526,9 @@ def verify_password(password: str) -> dict:
 
     if result.get('ok'):
         _clear_login_state()
-        _promote_login_session()
+        synced = _promote_login_session()
+        if not synced:
+            logger.error('2FA KIRISH MUVaffaqiyatli LEKIN Neon\'ga saqlanmadi — worker eski sessiyada qoladi!')
         _restart_worker()
     return result
 

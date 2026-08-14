@@ -202,17 +202,21 @@ async def main():
                 _log(f"XATO: Telegramga ulanishda xatolik: {type(exc).__name__}")
                 sys.exit(EXIT_NOT_AUTHORIZED)
         if not await client.is_user_authorized():
-            _log("XATO: Session yo'q yoki ro'yxatdan o'tmagan. "
-                 "Admin panel → To'lov nazorati → User Client orqali kirishni bajaring "
-                 "(telefon raqam → kod → 2FA parol).")
+            msg = ("XATO: Session yo'q yoki ro'yxatdan o'tmagan. "
+                   "Admin panel → To'lov nazorati → User Client orqali kirishni bajaring "
+                   "(telefon raqam → kod → 2FA parol).")
+            _log(msg)
+            user_client_stats.record_error(msg)
             await client.disconnect()
             sys.exit(EXIT_NOT_AUTHORIZED)
 
     await client.start()
     me = await client.get_me()
     if me is None:
-        _log("XATO: Session topilmadi yoki ro'yxatdan o'tmagan. "
-             "Avval setup_user_client.py bilan kirishni bajaring.")
+        msg = "XATO: Session topilmadi yoki ro'yxatdan o'tmagan. " \
+              "Avval setup_user_client.py bilan kirishni bajaring."
+        _log(msg)
+        user_client_stats.record_error(msg)
         sys.exit(EXIT_NOT_AUTHORIZED)
 
     _log(f"User client ishga tushdi: @{me.username or me.first_name} (id={me.id})")
