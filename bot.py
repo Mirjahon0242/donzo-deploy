@@ -146,6 +146,48 @@ def _heartbeat_loop():
     while True:
         time.sleep(HEARTBEAT_INTERVAL)
         heartbeat()
+        # Polling lock'ni yangilab turamiz — jonli instansiya lock'ni doim
+        # yangi tutadi; o'lgan instansiyaning lock'i eskiradi (TTL).
+        try:
+            from apps.settings_app.models import Setting
+            Setting.set_setting('bot_polling_lock', str(time.time()))
+        except Exception:
+            pass
+
+
+_POLLING_LOCK_TTL = 60  # soniya — lock shu vaqtdan eski bo'lsa egasi o'lgan deb hisoblanadi
+
+
+def _acquire_polling_lock():
+    """Startup lock — deploy paytida ikki bot instansiyasi bir vaqtda polling
+    qilib 409 (conflict) bermasligi uchun.
+
+    Render yangi deploy'ni ishga tushirganda eski kontener hali bir necha
+    soniya yashaydi — ikkalasi ham getUpdates chaqirsa Telegram 409 beradi
+    (xatolar 'Bot holati' panelida yig'iladi). Qoida:
+      • Boshqa instansiya lock'ni YANGI tutsa (< TTL) — polling boshlashni
+        kutamiz (15s qadam bilan, maks ~2.5 daqiqa).
+      • Lock eski / yo'q bo'lsa — o'zimiz olamiz va davom etamiz.
+    Lock'ni heartbeat loopi har 30s yangilaydi (yuqoriga qarang).
+    """
+    from apps.settings_app.models import Setting
+    for attempt in range(10):
+        try:
+            val = Setting.get_setting('bot_polling_lock', None)
+        except Exception:
+            val = None
+        now = time.time()
+        age = (now - float(val)) if val else None
+        if val is None or age is None or age > _POLLING_LOCK_TTL:
+            try:
+                Setting.set_setting('bot_polling_lock', str(now))
+            except Exception:
+                pass
+            print(f"[BOT] Polling lock olindi (attempt {attempt})")
+            return
+        print(f"[BOT] Boshqa instansiya polling qilmoqda (lock {int(age)}s) — 15s kutaman...")
+        time.sleep(15)
+    print("[BOT] Lock kutish tugadi — polling boshlanmoqda (PTB 409 ni o'zi hal qiladi)")
 
 
 def _price_sync_loop():
@@ -1175,6 +1217,12 @@ def main():
         pass  # non-fatal — run_polling will surface a real InvalidToken
 
     # Record startup time + restart count, then start the heartbeat thread.
+    # Avval polling lock'ni olamiz — deploy paytida eski instansiya bilan
+    # 409 conflict bo'lmasligi uchun (yuqoriga qarang: _acquire_polling_lock).
+    try:
+        _acquire_polling_lock()
+    except Exception as exc:
+        print(f"[BOT] Polling lock xatosi (davom etiladi): {exc}")
     mark_started()
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     print("[BOT] Stats: .freebuff/bot-stats.json (heartbeat har 30s)")
