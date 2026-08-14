@@ -16,20 +16,33 @@ from apps.security import auto_fix
 
 class AiFixBackupRevertTests(TestCase):
     def setUp(self):
-        # Haqiqiy backend fayllariga tegmaslik uchun backup papkasini
-        # vaqtinchalik joyga ko'chirib, oxirida qaytaramiz.
+        # Haqiqiy backend fayllariga tegmaslik uchun BASE_DIR va backup
+        # papkasini vaqtinchalik joyga yo'naltiramiz — test fayllar ham shu
+        # papkada yoziladi, hech qanday real kodga tegmaydi.
         self._tmp = tempfile.mkdtemp(prefix='ai_fix_test_')
-        self._orig = auto_fix.AI_FIX_BACKUP_DIR
-        auto_fix.AI_FIX_BACKUP_DIR = os.path.join(self._tmp, 'ai_fix')
+        self._orig_base = auto_fix.BASE_DIR
+        self._orig_backup = auto_fix.AI_FIX_BACKUP_DIR
+        self._orig_roots = auto_fix.ALLOWED_ROOTS
+        auto_fix.BASE_DIR = self._tmp
+        auto_fix.AI_FIX_BACKUP_DIR = os.path.join(self._tmp, 'backups', 'ai_fix')
         os.makedirs(auto_fix.AI_FIX_BACKUP_DIR, exist_ok=True)
+        # _resolve_abs faqat ALLOWED_ROOTS ichiga ruxsat beradi — vaqtinchalik
+        # papkani ham qo'shamiz (test fayllar shu yerda yoziladi).
+        auto_fix.ALLOWED_ROOTS = tuple(auto_fix.ALLOWED_ROOTS) + (self._tmp,)
 
     def tearDown(self):
-        auto_fix.AI_FIX_BACKUP_DIR = self._orig
+        auto_fix.BASE_DIR = self._orig_base
+        auto_fix.AI_FIX_BACKUP_DIR = self._orig_backup
+        auto_fix.ALLOWED_ROOTS = self._orig_roots
         try:
             import shutil
             shutil.rmtree(self._tmp, ignore_errors=True)
         except Exception:
             pass
+
+    def _tmp_rel(self, name):
+        """Vaqtinchalik papkadagi fayl uchun rel path (BASE_DIR ichida)."""
+        return name
 
     def _touch(self, rel, content='original'):
         abs_path = auto_fix._resolve_abs(rel)
@@ -40,7 +53,7 @@ class AiFixBackupRevertTests(TestCase):
         return abs_path
 
     def test_apply_patch_backups_and_changes(self):
-        rel = 'config/test_fix_dummy.py'
+        rel = self._tmp_rel('test_fix_dummy.py')
         abs_path = self._touch(rel, 'line1\nORIGINAL_MARKER\nline3\n')
         res = auto_fix.apply_ai_patch(
             {'file': rel, 'old': 'ORIGINAL_MARKER', 'new': 'NEW_VALUE'},
@@ -57,7 +70,7 @@ class AiFixBackupRevertTests(TestCase):
         self.assertTrue(any('test_fix_dummy' in n for n in names), names)
 
     def test_revert_restores_original(self):
-        rel = 'config/test_fix_dummy2.py'
+        rel = self._tmp_rel('test_fix_dummy2.py')
         abs_path = self._touch(rel, 'A\nB\nC\n')
         res = auto_fix.apply_ai_patch(
             {'file': rel, 'old': 'B', 'new': 'X'},
@@ -74,8 +87,8 @@ class AiFixBackupRevertTests(TestCase):
         self.assertNotIn('X', content)
 
     def test_multiple_files_patch(self):
-        rel1 = 'config/test_fix_m1.py'
-        rel2 = 'config/test_fix_m2.py'
+        rel1 = self._tmp_rel('test_fix_m1.py')
+        rel2 = self._tmp_rel('test_fix_m2.py')
         self._touch(rel1, 'ONE\n')
         self._touch(rel2, 'TWO\n')
         res = auto_fix.apply_ai_patch({
@@ -104,7 +117,7 @@ class AiFixBackupRevertTests(TestCase):
         self.assertIn('topilmadi', rev.get('error', ''))
 
     def test_old_string_not_found(self):
-        rel = 'config/test_fix_nf.py'
+        rel = self._tmp_rel('test_fix_nf.py')
         self._touch(rel, 'AAA\n')
         res = auto_fix.apply_ai_patch(
             {'file': rel, 'old': 'DOES_NOT_EXIST', 'new': 'X'},
@@ -123,7 +136,7 @@ class AiFixBackupRevertTests(TestCase):
 
     @mock.patch.object(auto_fix, '_gemini_patch')
     def test_ai_code_fix_applies(self, mock_patch):
-        rel = 'config/test_fix_ai.py'
+        rel = self._tmp_rel('test_fix_ai.py')
         self._touch(rel, 'ORIG\n')
         mock_patch.return_value = {
             'ok': True,
