@@ -230,6 +230,53 @@ _SCENARIO_DEFS = {
             'confirm': "Buyurtmani 'bajarildi' deb belgilaymizmi? (ha / yo'q)",
         },
     },
+    'change_price': {
+        'label': "Paket narxini o'zgartirish",
+        'keywords': ('narxni ozgartir', 'narxni o\'zgartir', 'narx ozgartir', 'narx o\'zgartir', 'price change',
+                     'narxini ozgartir', 'narxini o\'zgartir', 'paket narxi', 'narxni yangila', 'qancha turadi qilib'),
+        'roles': ('admin', 'super_admin'),
+        'steps': ('pick', 'price', 'confirm'),
+        'ask': {
+            'pick': "Qaysi paketning narxini o'zgartiramiz? Paket raqamini yuboring (masalan: 3). Yangi narxni ham yozishingiz mumkin: '3 25000'.",
+            'price': "Yangi narxni yuboring (so'mda, masalan: 25000).",
+            'confirm': "Narxni o'zgartirishni tasdiqlaysizmi? (ha / yo'q)",
+        },
+    },
+    'add_package': {
+        'label': "Yangi paket qo'shish",
+        'keywords': ('paket qo\'sh', 'paket qosh', 'yangi paket', 'add package', 'paket qo\'shish', 'narx qo\'sh'),
+        'roles': ('admin', 'super_admin'),
+        'steps': ('pick', 'name', 'price', 'confirm'),
+        'ask': {
+            'pick': "Qaysi xizmatga paket qo'shamiz? Xizmat raqamini yuboring (masalan: 2).",
+            'name': "Paket nomini yuboring (masalan: 1000 UC yoki 1200 Donat).",
+            'price': "Paket narxini yuboring (so'mda, masalan: 45000).",
+            'confirm': "Paketni qo'shishni tasdiqlaysizmi? (ha / yo'q)",
+        },
+    },
+    'topup_balance': {
+        'label': 'Foydalanuvchi balansini to\'ldirish',
+        'keywords': ('balans to\'ldir', 'balans toldir', 'balansga pul', 'top up', 'balans qo\'sh', 'pul qo\'sh'),
+        'roles': ('admin', 'super_admin'),
+        'steps': ('username', 'amount', 'confirm'),
+        'ask': {
+            'username': "Qaysi foydalanuvchiga balans to'ldiramiz? Username yoki telefon raqamini yuboring.",
+            'amount': "Qancha summa to'ldiramiz? (so'mda, masalan: 100000).",
+            'confirm': "Balansni to'ldirishni tasdiqlaysizmi? (ha / yo'q)",
+        },
+    },
+    'toggle_service': {
+        'label': "Xizmat/paketni yoqish yoki o'chirish",
+        'keywords': ('xizmatni ochir', 'xizmatni o\'chir', 'xizmatni yoq', 'xizmatni och', 'paketni ochir',
+                     'paketni o\'chir', 'paketni yoq', 'paketni och', 'disable service', 'enable service',
+                     'xizmatni yashir', 'xizmatni ko\'rsat'),
+        'roles': ('admin', 'super_admin'),
+        'steps': ('pick', 'confirm'),
+        'ask': {
+            'pick': "Qaysi xizmat yoki paketni yoqamiz/o'chiramiz? Raqam yuboring (masalan: 2 — holati qaytariladi).",
+            'confirm': "Holatni o'zgartirishni tasdiqlaysizmi? (ha / yo'q)",
+        },
+    },
 }
 
 # Stsenariy boshlanganda ko'rsatiladigan kirish savoli (detektorga mos kelganda).
@@ -237,6 +284,10 @@ _SCENARIO_INTRO = {
     'new_card': "Yaxshi, ser — yangi karta qo'shamiz. Bir nechta savol: karta raqami, egasi, bank, limitlar. Boshlaymiz.",
     'accept_payment': "Yaxshi — shubhali to'lovni tasdiqlaymiz. Avval qaysi to'lov ekanini aniqlab olamiz.",
     'complete_order': "Yaxshi — buyurtmani bajarilgan deb belgilaymiz. Buyurtma raqamini so'rayman.",
+    'change_price': "Yaxshi — narxni o'zgartiramiz. Katalogdagi paketlarni ko'rsataman, qaysi birini tanlaysiz.",
+    'add_package': "Yaxshi — yangi paket qo'shamiz. Katalogdagi xizmatlarni ko'rsataman, qaysi biriga qo'shish kerak.",
+    'topup_balance': "Yaxshi — balans to'ldiramiz. Foydalanuvchini aniqlaymiz.",
+    'toggle_service': "Yaxshi — xizmat/paket holatini o'zgartiramiz.",
 }
 
 _CANCEL_WORDS = ('bekor', 'toxtat', "to'xtat", 'yoq', "yo'q", 'qayt', 'ortga', 'kerak emas', 'cancel')
@@ -259,6 +310,40 @@ def _detect_scenario(q: str):
         if any(k in ql for k in sc['keywords']):
             return key
     return None
+
+
+def _catalog_numbered(only_services: bool = False) -> str:
+    """Raqamli katalog ro'yxati: barcha aktiv xizmatlar (va ixtiyoriy paketlar)."""
+    try:
+        from apps.services.models import Service, Package
+        lines = []
+        services = list(Service.objects.filter(is_active=True).order_by('name'))
+        for i, svc in enumerate(services, start=1):
+            lines.append(f"{i}. {svc.name} ({svc.category_name})")
+            if not only_services:
+                pkgs = list(Package.objects.filter(service=svc, is_active=True).order_by('order_index', 'id'))
+                for p in pkgs:
+                    lines.append(f"   • {p.name} = {float(p.price):,.0f} so'm")
+        if not lines:
+            return "(katalog bo'sh)"
+        return '\n'.join(lines)
+    except Exception:
+        return "(katalog o'qib bo'lmadi)"
+
+
+def _package_list_numbered() -> str:
+    """Barcha aktiv paketlarning raqamli ro'yxati (narx o'zgartirish uchun)."""
+    try:
+        from apps.services.models import Package
+        pkgs = list(Package.objects.filter(is_active=True).order_by('order_index', 'id'))
+        if not pkgs:
+            return "(aktiv paket yo'q)"
+        return '\n'.join(
+            f"{i}. {p.service.name} — {p.name} = {float(p.price):,.0f} so'm"
+            for i, p in enumerate(pkgs, start=1)
+        )
+    except Exception:
+        return "(paketlar o'qib bo'lmadi)"
 
 
 def _scenario_pending_list() -> str:
@@ -447,6 +532,106 @@ def _run_scenario_action(scenario: str, data: dict, username: str) -> dict:
                                 f"{_dt.datetime.now():%d.%m %H:%M} {username}: buyurtma {order.order_number} bajarildi")
             return {'ok': True, 'answer': f"Buyurtma {order.order_number} bajarilgan deb belgilandi ✅"}
 
+        if scenario == 'change_price':
+            from apps.services.models import Package
+            pidx = str(data.get('pick') or '').strip()
+            if not pidx.isdigit():
+                return {'ok': False, 'answer': "Paket raqami noto'g'ri. Qayta yuboring."}
+            try:
+                pkg = Package.objects.filter(is_active=True).order_by('order_index', 'id')[int(pidx) - 1]
+            except (IndexError, ValueError):
+                return {'ok': False, 'answer': f"{pidx}-raqamli paket topilmadi."}
+            try:
+                new_price = float(str(data.get('price') or '').replace(' ', '').replace(',', ''))
+                if new_price <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return {'ok': False, 'answer': "Yangi narx noto'g'ri. Musbat son yuboring (masalan: 25000)."}
+            old_price = float(pkg.price)
+            pkg.price = new_price
+            pkg.save(update_fields=['price'])
+            Setting.set_setting('staff_ai_last_action',
+                                f"{_dt.datetime.now():%d.%m %H:%M} {username}: {pkg.service.name} / {pkg.name} narxi "
+                                f"{old_price:,.0f}→{new_price:,.0f} so'm")
+            return {'ok': True, 'answer': f"Narx yangilandi: {pkg.service.name} — {pkg.name}: "
+                                          f"{old_price:,.0f} so'm → {new_price:,.0f} so'm ✅"}
+
+        if scenario == 'add_package':
+            from apps.services.models import Service, Package
+            sidx = str(data.get('pick') or '').strip()
+            if not sidx.isdigit():
+                return {'ok': False, 'answer': "Xizmat raqami noto'g'ri. Qayta yuboring."}
+            try:
+                svc = Service.objects.filter(is_active=True).order_by('name')[int(sidx) - 1]
+            except (IndexError, ValueError):
+                return {'ok': False, 'answer': f"{sidx}-raqamli xizmat topilmadi."}
+            name = str(data.get('name') or '').strip()[:200]
+            try:
+                price = float(str(data.get('price') or '').replace(' ', '').replace(',', ''))
+                if not name or price <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return {'ok': False, 'answer': "Paket nomi yoki narxi noto'g'ri. Qayta yuboring."}
+            pkg = Package.objects.create(service=svc, name=name, price=price, is_active=True)
+            Setting.set_setting('staff_ai_last_action',
+                                f"{_dt.datetime.now():%d.%m %H:%M} {username}: paket qo'shildi {svc.name} / {name} ({price:,.0f})")
+            return {'ok': True, 'answer': f"Paket qo'shildi: {svc.name} — {name} = {price:,.0f} so'm ✅"}
+
+        if scenario == 'topup_balance':
+            from apps.users.models import User
+            ident = str(data.get('username') or '').strip().lstrip('@').lower()
+            if not ident:
+                return {'ok': False, 'answer': "Foydalanuvchi kiritilmadi."}
+            u = None
+            u = User.objects.filter(username__iexact=ident).first() or User.objects.filter(username__iexact=ident.lstrip('+')).first()
+            if u is None:
+                phone = ident.replace('+', '').replace(' ', '')
+                u = User.objects.filter(phone__icontains=phone).first() if phone else None
+            if u is None:
+                return {'ok': False, 'answer': f"'{ident}' foydalanuvchi topilmadi. Username yoki telefon raqamini tekshiring."}
+            try:
+                amount = float(str(data.get('amount') or '').replace(' ', '').replace(',', ''))
+                if amount <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return {'ok': False, 'answer': "Summa noto'g'ri. Musbat son yuboring (masalan: 100000)."}
+            from decimal import Decimal
+            u.balance = (u.balance or 0) + Decimal(str(amount))
+            u.save(update_fields=['balance', 'updated_at'])
+            Setting.set_setting('staff_ai_last_action',
+                                f"{_dt.datetime.now():%d.%m %H:%M} {username}: {u.username} balansiga {amount:,.0f} so'm qo'shildi")
+            return {'ok': True, 'answer': f"Balans to'ldirildi: @{u.username} → +{amount:,.0f} so'm (jami {float(u.balance):,.0f} so'm) ✅"}
+
+        if scenario == 'toggle_service':
+            from apps.services.models import Service, Package
+            idx = str(data.get('pick') or '').strip()
+            if not idx.isdigit():
+                return {'ok': False, 'answer': "Raqam noto'g'ri. Qayta yuboring."}
+            try:
+                n = int(idx)
+                services = list(Service.objects.filter(is_active=True).order_by('name'))
+                packages = list(Package.objects.filter(is_active=True).order_by('order_index', 'id'))
+                total = len(services) + len(packages)
+                if n < 1 or n > total:
+                    return {'ok': False, 'answer': f"{n}-raqam topilmadi (jami {total} ta obyekt)."}
+                if n <= len(services):
+                    obj = services[n - 1]
+                    obj.is_active = not obj.is_active
+                    obj.save(update_fields=['is_active', 'updated_at'])
+                    state = 'YOQILDI' if obj.is_active else "O'CHIRILDI"
+                    msg = f"Xizmat {state}: {obj.name}"
+                else:
+                    obj = packages[n - len(services) - 1]
+                    obj.is_active = not obj.is_active
+                    obj.save(update_fields=['is_active'])
+                    state = 'YOQILDI' if obj.is_active else "O'CHIRILDI"
+                    msg = f"Paket {state}: {obj.service.name} — {obj.name}"
+                Setting.set_setting('staff_ai_last_action',
+                                    f"{_dt.datetime.now():%d.%m %H:%M} {username}: {msg}")
+                return {'ok': True, 'answer': msg + " ✅"}
+            except (IndexError, ValueError):
+                return {'ok': False, 'answer': f"{idx}-raqam noto'g'ri."}
+
         return {'ok': False, 'answer': "Noma'lum stsenariy."}
     except Exception as exc:
         logger.exception('scenario action failed: %s', scenario)
@@ -523,6 +708,94 @@ def _scenario_handle(scenario: str, step: str, q: str, data: dict, username: str
             return {'answer': f"Buyurtma {order.order_number}: {service_name} — {float(order.total_price or 0):,.0f} so'm "
                               f"(holat: {order.status})\n\n{sc['ask']['confirm']}",
                     'done': False, 'data': data, 'next_step': 'confirm'}
+
+    if scenario == 'change_price':
+        if step == 'pick':
+            if ql and ' ' in ql and ql.split(' ')[0].isdigit():
+                idx, _, price = ql.partition(' ')
+                data['pick'] = idx
+                data['price'] = price.strip()
+                from apps.services.models import Package
+                try:
+                    pkg = Package.objects.filter(is_active=True).order_by('order_index', 'id')[int(idx) - 1]
+                    detail = f"{pkg.service.name} — {pkg.name} (hozir {float(pkg.price):,.0f} so'm → {price.strip()} so'm)"
+                except (IndexError, ValueError):
+                    detail = f"{idx}-raqamli paket topilmadi."
+                return {'answer': detail + f"\n\n{sc['ask']['confirm']}", 'done': False, 'data': data, 'next_step': 'confirm'}
+            if not ql.isdigit():
+                return {'answer': _package_list_numbered() + "\n\n" + sc['ask']['pick'],
+                        'done': False, 'data': data, 'next_step': 'pick'}
+            data['pick'] = ql
+            from apps.services.models import Package
+            try:
+                pkg = Package.objects.filter(is_active=True).order_by('order_index', 'id')[int(ql) - 1]
+                detail = f"{pkg.service.name} — {pkg.name} (hozir {float(pkg.price):,.0f} so'm)"
+            except (IndexError, ValueError):
+                detail = f"{ql}-raqamli paket topilmadi."
+            return {'answer': detail + f"\n\n{sc['ask']['price']}", 'done': False, 'data': data, 'next_step': 'price'}
+        if step == 'price':
+            data['price'] = ql
+            from apps.services.models import Package
+            try:
+                pkg = Package.objects.filter(is_active=True).order_by('order_index', 'id')[int(data['pick']) - 1]
+                detail = f"{pkg.service.name} — {pkg.name}: {float(pkg.price):,.0f} so'm → {ql} so'm"
+            except (IndexError, ValueError):
+                detail = f"{data.get('pick')}-raqamli paket topilmadi."
+            return {'answer': detail + f"\n\n{sc['ask']['confirm']}", 'done': False, 'data': data, 'next_step': 'confirm'}
+
+    if scenario == 'add_package':
+        if step == 'pick':
+            if not ql.isdigit():
+                return {'answer': _catalog_numbered(only_services=True) + "\n\n" + sc['ask']['pick'],
+                        'done': False, 'data': data, 'next_step': 'pick'}
+            data['pick'] = ql
+            from apps.services.models import Service
+            try:
+                svc = Service.objects.filter(is_active=True).order_by('name')[int(ql) - 1]
+                detail = f"Xizmat: {svc.name} ({svc.category_name})"
+            except (IndexError, ValueError):
+                detail = f"{ql}-raqamli xizmat topilmadi."
+            return {'answer': detail + f"\n\n{sc['ask']['name']}", 'done': False, 'data': data, 'next_step': 'name'}
+        if step == 'name':
+            data['name'] = ql[:200]
+            return {'answer': sc['ask']['price'], 'done': False, 'data': data, 'next_step': 'price'}
+        if step == 'price':
+            data['price'] = ql
+            return {'answer': f"Xulosa:\n  Xizmat: {data.get('pick')}\n  Paket: {data.get('name')}\n  "
+                              f"Narx: {ql} so'm\n\n{sc['ask']['confirm']}",
+                    'done': False, 'data': data, 'next_step': 'confirm'}
+
+    if scenario == 'topup_balance':
+        if step == 'username':
+            data['username'] = ql
+            return {'answer': sc['ask']['amount'], 'done': False, 'data': data, 'next_step': 'amount'}
+        if step == 'amount':
+            data['amount'] = ql
+            return {'answer': f"Xulosa:\n  Foydalanuvchi: {data.get('username')}\n  Summa: {ql} so'm\n\n{sc['ask']['confirm']}",
+                    'done': False, 'data': data, 'next_step': 'confirm'}
+
+    if scenario == 'toggle_service':
+        if step == 'pick':
+            if not ql.isdigit():
+                return {'answer': _catalog_numbered() + "\n\n" + sc['ask']['pick'],
+                        'done': False, 'data': data, 'next_step': 'pick'}
+            data['pick'] = ql
+            from apps.services.models import Service, Package
+            try:
+                n = int(ql)
+                services = list(Service.objects.filter(is_active=True).order_by('name'))
+                packages = list(Package.objects.filter(is_active=True).order_by('order_index', 'id'))
+                total = len(services) + len(packages)
+                if n < 1 or n > total:
+                    detail = f"{n}-raqam topilmadi (jami {total} ta)."
+                elif n <= len(services):
+                    detail = f"Xizmat: {services[n-1].name}"
+                else:
+                    p = packages[n - len(services) - 1]
+                    detail = f"Paket: {p.service.name} — {p.name}"
+            except (IndexError, ValueError):
+                detail = f"{ql}-raqam noto'g'ri."
+            return {'answer': detail + f"\n\n{sc['ask']['confirm']}", 'done': False, 'data': data, 'next_step': 'confirm'}
 
     # Noma'lum bosqich — stsenariyni to'xtatamiz.
     return {'answer': "Kutilmagan holat — stsenariy bekor qilindi. Boshqa savol bo'lsa, so'rang.",
@@ -649,6 +922,28 @@ def _live_context() -> str:
             parts.append("== OXIRGI XATOLAR ==\n(xatolar yo'q)")
     except Exception:
         parts.append("== OXIRGI XATOLAR ==\n(xato ro'yxati o'qib bo'lmadi)")
+
+    # 4) KATALOG — barcha xizmatlar, paketlar va narxlar (UC, o'yinlar, xizmatlar)
+    try:
+        from apps.services.models import Category, Service, Package
+        cats = list(Category.objects.filter(is_active=True).order_by('order_index', 'name'))
+        lines = []
+        for cat in cats[:10]:
+            lines.append(f"▪ {cat.name}:")
+            services = list(Service.objects.filter(category=cat, is_active=True).order_by('name'))
+            for svc in services[:12]:
+                pkgs = list(Package.objects.filter(service=svc, is_active=True).order_by('order_index', 'id'))
+                if not pkgs:
+                    lines.append(f"   • {svc.name} — (paket yo'q)")
+                    continue
+                pkg_parts = [f"{p.name} = {float(p.price):,.0f} so'm" for p in pkgs[:10]]
+                extra = f" (+{len(pkgs)-10} ta" if len(pkgs) > 10 else ''
+                lines.append(f"   • {svc.name}: " + "; ".join(pkg_parts) + (extra + ')' if extra else ''))
+        if not lines:
+            lines.append("(katalog bo'sh)")
+        parts.append("== KATALOG (xizmatlar, paketlar, narxlar) ==\n" + "\n".join(lines))
+    except Exception:
+        parts.append("== KATALOG ==\n(katalog o'qib bo'lmadi)")
 
     return "\n\n".join(parts)
 
