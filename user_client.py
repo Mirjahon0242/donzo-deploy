@@ -62,6 +62,8 @@ EXIT_SESSION_BLOCKED = 5  # AuthKeyDuplicatedError — qayta kirish kerak
 
 def _session_has_auth_key(path: str) -> bool:
     """SQLite Telethon sessiya faylida auth_key bormi? (yaroqli sessiya)."""
+    if not path or not os.path.exists(path):
+        return False
     try:
         import sqlite3
         con = sqlite3.connect(path)
@@ -163,9 +165,10 @@ async def main():
 
     os.makedirs(SESSION_DIR, exist_ok=True)
     # Self-heal: lokal fayl yo'q yoki auth_key'siz bo'lsa — Neon'dan tiklaymiz.
+    # DB o'qish async kontekstda → sync_to_async shart.
     if not os.path.exists(SESSION_FILE) or not _session_has_auth_key(SESSION_FILE):
         _log('Lokal sessiya yo\'q/yaroqsiz — Neon DB\'dan tiklanmoqda...')
-        _pull_session_from_db()
+        await sync_to_async(_pull_session_from_db)()
 
     client = TelegramClient(SESSION_FILE, int(api_id), api_hash)
 
@@ -185,7 +188,7 @@ async def main():
         # qayta yuklab, qayta urinamiz. Faqat shundan keyin taslim bo'lamiz.
         _log("Sessiya avtorizatsiyadan o'tmadi — Neon DB'dan qayta yuklab urinilmoqda...")
         await client.disconnect()
-        pulled = _pull_session_from_db()
+        pulled = await sync_to_async(_pull_session_from_db)()
         if pulled:
             client = TelegramClient(SESSION_FILE, int(api_id), api_hash)
             try:
