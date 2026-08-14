@@ -240,14 +240,32 @@ class StaffAiTests(TestCase):
         p = captured.get('prompt', '')
         self.assertIn('== TODAY', p)
         self.assertIn('Yangi foydalanuvchilar', p)
-        # Tarix limiti 15 ga oshirildi
-        self.assertEqual(staff_ai.CONV_HISTORY_MAX, 15)
+        # Tarix limiti 30 ga oshirildi (xotira kengaytirildi)
+        self.assertEqual(staff_ai.CONV_HISTORY_MAX, 30)
 
     def test_daily_context_never_raises(self):
         # _daily_context hech qachon exception tashlamaydi
         out = staff_ai._daily_context()
         self.assertIsInstance(out, str)
         self.assertTrue(len(out) > 0)
+
+    def test_thinking_and_humanity_rules_in_prompt(self):
+        # Prompt'da fikrlash (tahlil) va odamiylik qoidalari bor
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'OK'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            r = staff_ai.staff_chat('nimadir so\'rasam', 'flow5_user')
+            self.assertTrue(r['ok'])
+        p = captured.get('prompt', '')
+        self.assertIn('fikrlash', p)
+        self.assertIn('ODIAMIYLIK', p)
+        self.assertIn('tahlil', p)
 
     # ── MAXSUS STSENARIYLAR ────────────────────────────────────────────────
     def _mk_user(self, username, role):
