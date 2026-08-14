@@ -171,7 +171,12 @@ def _acquire_polling_lock():
     Lock'ni heartbeat loopi har 30s yangilaydi (yuqoriga qarang).
     """
     from apps.settings_app.models import Setting
-    for attempt in range(10):
+    # Eski instansiya lock'ni heartbeat bilan har 30s yangilaydi — shuning
+    # uchun yangi instansiya eski o'lguncha (Render uni ~1-2 daqiqada
+    # o'ldiradi) kutishi kerak. 15s qadam × 40 urinish = 10 daqiqa sabr.
+    # 10 daqiqadan keyin ham lock yangi bo'lsa — baribir boshlaymiz
+    # (hech qachon abadiy osilib qolmaydi).
+    for attempt in range(40):
         try:
             val = Setting.get_setting('bot_polling_lock', None)
         except Exception:
