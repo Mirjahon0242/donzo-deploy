@@ -60,7 +60,16 @@ def _session_bootstrap():
             _log('SESSION', f"DB sessiya o'qilmadi: {type(exc).__name__}: {str(exc)[:120]}")
             return
     if not b64:
-        _log('SESSION', "sessiya topilmadi (env ham, DB ham bo'sh) — user_client ishlamaydi")
+        _log('SESSION', "sessiya topilmadi (env ham, DB ham bo'sh) — eski fayl o'chiriladi")
+        # Neon'da sessiya yo'q — kontenerdagi eski (bloklangan) faylni o'chiramiz,
+        # aks holda worker eski bloklangan sessiyani ishlatib qayta-ketadi.
+        try:
+            stale = os.path.join(BASE_DIR, 'sessions', 'donzo_user.session')
+            if os.path.exists(stale):
+                os.remove(stale)
+                _log('SESSION', 'eski sessiya fayli o\'chirildi')
+        except Exception:
+            pass
         return
     try:
         data = base64.b64decode(b64)
