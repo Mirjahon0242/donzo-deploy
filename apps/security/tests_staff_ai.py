@@ -92,6 +92,30 @@ class StaffAiTests(TestCase):
                 self.assertTrue(r['ok'], g)
                 self.assertEqual(r['answer'], 'GEMINI', g)
 
+    def test_greeting_uses_short_prompt_fast_path(self):
+        # Greeting QISQA maxsus prompt bilan yuboriladi — to'liq kontekst yo'q,
+        # lekin dinamik (Gemini har safar yozilganiga qarab javob tuzadi).
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'GEMINI'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            r = staff_ai.staff_chat('Salom!', 'ai_user')
+            self.assertTrue(r['ok'])
+        p = captured['prompt']
+        # Qisqa greeting persona ishlatiladi
+        self.assertIn('QISQA PERSONA', p)
+        # To'liq og'ir kontekst YO'Q (tez javob uchun)
+        self.assertNotIn('LIVE SYSTEM CONTEXT', p)
+        self.assertNotIn('KATALOG', p)
+        # Lekin status satri va ser murojaati bor
+        self.assertIn('STATUS SNIPPET', p)
+        self.assertIn('ser', p)
+
     def test_status_snippet_never_raises(self):
         # _status_snippet hech qachon exception tashlamaydi
         out = staff_ai._status_snippet()

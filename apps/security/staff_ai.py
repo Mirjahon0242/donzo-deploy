@@ -182,8 +182,44 @@ SPECIAL SCENARIOS (executed WITHOUT Gemini — deterministic, safe):
   scenario logic takes over.
 """
 
-# Salomlashish ham Gemini orqali dinamik javob beradi — tayyor matn yo'q,
-# AI yozilgan savolga qarab har safar yangi, mos javob qaytaradi.
+# ── GREETING (tezkor maxsus yo'l) ───────────────────────────────────────
+# Salomlashish ham Gemini orqali DINAMIK javob beradi (tayyor matn yo'q),
+# lekin to'liq kontekst/katalog/history yuborilmaydi — QISQA maxsus persona
+# bilan Gemini 2-3x tez javob qaytaradi. Dinamiklik saqlanadi: AI har safar
+# yozilgan salomga qarab yangi javob tuzadi.
+_GREETING_RE = re.compile(
+    r'^\s*(salom|assalomu alaykum|va alaykum|hey|hey donzo|hello|hi|qales|qalaysiz|'
+    r'tinchmisiz|hol-ahvol|good (morning|evening|afternoon)|yoqlab|bormisiz|bor ekansiz)'
+    r'[!?.…]*\s*$',
+    re.IGNORECASE,
+)
+
+# Greeting uchun QISQA persona — to'liq _PERSONA o'rniga faqat xarakter +
+# uslub + status satri qoidasi. Katalog/history/health YO'Q → Gemini tez.
+_GREETING_PERSONA = """## QISQA PERSONA — SHAXSIY AI YORDAMCHI
+
+Sen DONZO platformasining egasi (unga "ser" deb murojaat qilasan) va staffi bilan
+staff Telegram guruhida gaplashadigan shaxsiy AI yordamchisan. Oddiy chatbot emassan.
+
+Xarakter: juda aqlli, sokin va vazmin, maqsadga yo'naltirilgan, sodiq, nozik hazil
+bilan, himoyachi va kuzatuvchan. Mustaqil fikrlaysan — kerak bo'lsa "Bu yaxshi fikr
+emas" deb ayta olasan.
+
+Gapirish uslubi: QISQA va aniq, avval muhim ma'lumot. "Albatta!", "Zo'r!" kabi
+sun'iy iboralarni takrorlama. O'zbekcha gapirilsa o'zbekcha javob ber. Foydalanuvchi
+buyruq bersa — avval nima qilish kerakligini tushun, keyin javob ber.
+
+Reaksiya uslubi (so'zma-so'z takrorlama — yozilganiga qarab yangi javob tuz):
+- "Nima gap?" → tizim holatini qisqa ayt ("Tizimlar normal ishlayapti. Barcha asosiy
+  jarayonlar nazorat ostida." kabi)
+- "Yordam kerak" → vazifani so'rang ("Albatta. Vazifani ayting.")
+- Salomlashishga qisqa, xarakterli, ozgina hazil bilan javob ber va nima xizmat
+  kerakligini so'ra (holat / buyurtmalar / to'lovlar / kartalar / xatolar).
+
+Qoida: javobing oxiriga STATUS SNIPPET'dagi qisqa jonli holat satrini alohida
+qator sifatida qo'shish SHART — uni so'zma-so'z ishlat, raqamlarni o'zgartirma.
+Sen qanday yordamchi ekaningni har javobda takrorlama.
+"""
 
 # Bosqich o'tish qoidalari: foydalanuvchi javobidan kelib chiqib keyingi bosqich.
 # 'ha / batafsil / to'g'rilash' → detail; 'rahmat / tamom / yetarli' → done;
@@ -1013,6 +1049,27 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                 'error': 'throttled',
                 'answer': "Juda ko'p so'rov, ser — 1 daqiqa sabr qiling, keyin yana so'rang.",
             }
+
+        # ── GREETING: qisqa maxsus prompt (tez, lekin dinamik) ──
+        # To'liq kontekst/katalog/history yuborilmaydi — faqat qisqa persona +
+        # status satri + yozilgan salom. Gemini 2-3x tez javob beradi, lekin
+        # har safar yozilganiga qarab YANGI javob tuzadi (tayyor matn emas).
+        if q and _GREETING_RE.match(q):
+            who = 'owner (call him "ser")' if _is_owner(username) else f'staff member @{username}'
+            snippet = _status_snippet()
+            prompt = (
+                _GREETING_PERSONA
+                + "\n\n== STATUS SNIPPET (append this exact line at the END of your answer) ==\n"
+                + snippet
+                + "\n\n== WHO IS ASKING ==\n"
+                + who
+                + "\n\n== USER SAID ==\n"
+                + q[:400]
+            )
+            result = _call_gemini(prompt)
+            if result.get('ok'):
+                return {'ok': True, 'answer': result['answer']}
+            return {'ok': False, 'error': 'network_error', 'answer': result['answer']}
 
         # ── Suhbat holatini yuklaymiz va yangi bosqichni hisoblaymiz ──
         conv = _conv_load(username)
