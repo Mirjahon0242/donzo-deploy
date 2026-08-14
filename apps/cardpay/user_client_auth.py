@@ -246,12 +246,17 @@ def _run(coro, timeout=OP_TIMEOUT):
             loop.close()
 
     import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(_worker)
-        try:
-            future.result(timeout=timeout + 5)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(f'user client operation timed out ({timeout}s)')
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = ex.submit(_worker)
+    try:
+        future.result(timeout=timeout + 5)
+    except concurrent.futures.TimeoutError:
+        # shutdown(wait=False): osilgan thread view'ni bloklab qo'ymasin —
+        # aks holda "kod tekshirilmadi" (frontend 45s timeout) shu sababli edi.
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise TimeoutError(f'user client operation timed out ({timeout}s)')
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     if 'error' in result:
         raise result['error']
     return result['value']
