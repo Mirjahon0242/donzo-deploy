@@ -544,7 +544,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         if user.role in ('super_admin', 'admin'):
             lines += [
-                "/togrila — AVTO-TUZATISH (ishlamayotgan komponentlarni tiklaydi)",
+                "/togrila [muammo] — AVTO-TUZATISH (+ AI kod tuzatish, backup bilan)",
+                "/qaytar — oxirgi AI kod tuzatishini asl holatiga qaytaradi",
                 "/restart backend|tunnel|bot|userclient|watchdog — komponent restart",
             ]
     lines += ["", "🚀 Eng asosiy: <b>Donat qilishni boshlash</b> tugmasi orqali web app'ga o'ting!"]
@@ -659,20 +660,64 @@ async def togrila_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /togrila — AVTO-TUZATISH: tizim holatini tekshiradi va ishlamayotgan
     komponentlarni (backend, tunnel, bot, user client) avtomatik tiklaydi.
+    Qo'shimcha: muammo tavsifi berilsa AI kod tuzatishni ham qiladi
+    (backup saqlanadi — yoqmasa /qaytar).
     Faqat admin/super_admin uchun.
     """
     bump(updates=1, messages=1, command='togrila')
     if not await _require_admin(update):
         return
+    args = (context.args or [])
+    problem = ' '.join(args).strip() if args else ''
     await update.effective_message.reply_html(
         "🔧 <b>Avto-tuzatish boshlandi...</b>\n\n"
         "Tizim holati tekshirilmoqda va ishlamayotgan komponentlar "
         "qayta ishga tushirilmoqda. Bu 20-60 soniya oladi."
     )
-    from apps.security.auto_fix import run_auto_fix, format_fix_report
+    from apps.security.auto_fix import run_auto_fix, format_fix_report, ai_code_fix, format_patch_report
     username = update.effective_user.username or str(update.effective_user.id)
     result = await sync_to_async(run_auto_fix)(username)
     await update.effective_message.reply_html(format_fix_report(result))
+
+    # Muammo tavsifi berilgan bo'lsa — AI kod tuzatish (backup bilan)
+    if problem:
+        await update.effective_message.reply_html(
+            f"🧠 <b>AI tahlil + kod tuzatish</b>\n\n"
+            f"Muammo: <i>{staff_ai.escape_html(problem[:300])}</i>\n"
+            "Gemini tahlil qilmoqda... (20-45 soniya)"
+        )
+        try:
+            from apps.security import system_health
+            health_text = ''
+            try:
+                health_text = await sync_to_async(system_health.format_health_report)()
+            except Exception:
+                health_text = ''
+            fix = await sync_to_async(ai_code_fix)(problem, username, health_text)
+            report = format_patch_report(fix)
+            if fix.get('analysis') and fix.get('applied'):
+                report = f"{report}\n\n🔍 AI tahlil:\n{staff_ai.escape_html(fix['analysis'][:300])}"
+            elif fix.get('note') == 'no_change':
+                report = f"🧠 {staff_ai.escape_html(fix.get('analysis', 'AI: kod o\'zgarishi shart emas.'))}"
+            await update.effective_message.reply_html(report)
+        except Exception as exc:
+            await update.effective_message.reply_html(
+                f"⚠️ AI kod tuzatishda xato: {type(exc).__name__}: {str(exc)[:150]}"
+            )
+
+
+async def qaytar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /qaytar — oxirgi AI kod tuzatishini asl holatiga qaytaradi (backup'dan).
+    Faqat admin/super_admin uchun.
+    """
+    bump(updates=1, messages=1, command='qaytar')
+    if not await _require_admin(update):
+        return
+    from apps.security.auto_fix import revert_last_fix, format_patch_report
+    username = update.effective_user.username or str(update.effective_user.id)
+    result = await sync_to_async(revert_last_fix)(username)
+    await update.effective_message.reply_html(format_patch_report(result))
 
 
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1006,6 +1051,7 @@ def main():
     application.add_handler(CommandHandler('xato', xato_command))
     application.add_handler(CommandHandler('tahlil', tahlil_command))
     application.add_handler(CommandHandler('togrila', togrila_command))
+    application.add_handler(CommandHandler('qaytar', qaytar_command))
     application.add_handler(CommandHandler('restart', restart_command))
     application.add_handler(CommandHandler('tunnel', tunnel_command))
     # DONZO AI — staff guruhida botga reply / @-mention / shaxsiy xabar
