@@ -209,3 +209,119 @@ class StaffAiTests(TestCase):
                 staff_ai.staff_chat(f'savol {i}', 'flow3_user')
         conv = staff_ai._conv_load('flow3_user')
         self.assertLessEqual(len(conv['history']), staff_ai.CONV_HISTORY_MAX * 2)
+
+    # ── MAXSUS STSENARIYLAR ────────────────────────────────────────────────
+    def _mk_user(self, username, role):
+        from apps.users.models import User
+        return User.objects.create_user(username=username, email=f'{username}@t.uz',
+                                        password='x12345678', role=role)
+
+    def test_scenario_new_card_requires_admin_role(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('s_guest', 'guest')
+        r = staff_ai.staff_chat('yangi karta qo\'shmoqchiman', 's_guest')
+        self.assertFalse(r['ok'])
+        self.assertIn('ruxsat yo\'q', r['answer'])
+
+    def test_scenario_new_card_full_flow(self):
+        from apps.cardpay.models import PaymentCard
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('s_admin', 'admin')
+        # 1) Stsenariy boshlanadi
+        r = staff_ai.staff_chat('yangi karta qo\'shmoqchiman', 's_admin')
+        self.assertTrue(r['ok'])
+        self.assertIn('Karta raqamini yuboring', r['answer'])
+        # 2) Raqam
+        r = staff_ai.staff_chat('8600123412345678', 's_admin')
+        self.assertIn('Karta egasi', r['answer'])
+        # 3) Egas
+        r = staff_ai.staff_chat('JAVLONBEK AKRAMOV', 's_admin')
+        self.assertIn('Qaysi bank', r['answer'])
+        # 4) Bank
+        r = staff_ai.staff_chat('XALQ BANKI', 's_admin')
+        self.assertIn('Limit', r['answer'])
+        # 5) Limit
+        r = staff_ai.staff_chat('5000000, 30', 's_admin')
+        self.assertIn('tasdiqlaysizmi', r['answer'])
+        # 6) Tasdiqlash → amal bajariladi
+        r = staff_ai.staff_chat('ha', 's_admin')
+        self.assertTrue(r['ok'])
+        self.assertIn('qo\'shildi', r['answer'])
+        self.assertTrue(PaymentCard.objects.filter(card_number='8600123412345678').exists())
+        card = PaymentCard.objects.get(card_number='8600123412345678')
+        self.assertEqual(card.card_holder, 'JAVLONBEK AKRAMOV')
+        self.assertEqual(float(card.max_amount), 5000000)
+        self.assertEqual(card.max_transfers, 30)
+        # Stsenariy tugadi — holat tozalandi
+        conv = staff_ai._conv_load('s_admin')
+        self.assertEqual(conv.get('step'), 'start')
+        self.assertNotIn('scenario', conv)
+
+    def test_scenario_new_card_cancel(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('s_admin2', 'admin')
+        r = staff_ai.staff_chat('yangi karta qo\'shish', 's_admin2')
+        self.assertTrue(r['ok'])
+        r = staff_ai.staff_chat('8600123412349999', 's_admin2')
+        self.assertTrue(r['ok'])
+        r = staff_ai.staff_chat('bekor qil', 's_admin2')
+        self.assertIn('Bekor qilindi', r['answer'])
+        from apps.cardpay.models import PaymentCard
+        self.assertFalse(PaymentCard.objects.filter(card_number='8600123412349999').exists())
+
+    def test_scenario_accept_payment_flow(self):
+        from apps.cardpay.models import SuspiciousPayment
+        from apps.users.models import User
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        user = self._mk_user('pay_customer', 'customer')
+        admin = self._mk_user('pay_admin', 'admin')
+        sp = SuspiciousPayment.objects.create(
+            user=user, amount='100000', status='pending',
+            note='test',
+        )
+        r = staff_ai.staff_chat('shubhali to\'lovni tasdiqlash kerak', 'pay_admin')
+        self.assertTrue(r['ok'])
+        r = staff_ai.staff_chat(str(sp.pk), 'pay_admin')
+        self.assertIn('tasdiqlaysizmi', r['answer'])
+        r = staff_ai.staff_chat('ha', 'pay_admin')
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['answer'])
+        sp.refresh_from_db()
+        self.assertEqual(sp.status, 'approved')
+
+    def test_scenario_complete_order_flow(self):
+        from apps.orders.models import Order
+        from apps.services.models import Service, Package, Category
+        from apps.users.models import User
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        operator = self._mk_user('ord_operator', 'operator')
+        customer = self._mk_user('ord_customer', 'customer')
+        cat = Category.objects.create(name='Test', slug='test')
+        svc = Service.objects.create(name='Xizmat', slug='xizmat', category=cat)
+        pkg = Package.objects.create(service=svc, name='Paket', amount_label='100', price='10000')
+        order = Order.objects.create(
+            order_number='ORD-777', customer=customer, service=svc, package=pkg,
+            field_values={}, customer_name='Test', customer_telegram='@t',
+            total_price='10000', status='pending',
+        )
+        r = staff_ai.staff_chat('buyurtmani bajarish kerak', 'ord_operator')
+        self.assertTrue(r['ok'])
+        r = staff_ai.staff_chat('ORD-777', 'ord_operator')
+        self.assertIn('bajarildi', r['answer'])
+        r = staff_ai.staff_chat('ha', 'ord_operator')
+        self.assertTrue(r['ok'])
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'completed')
+
+    def test_scenario_complete_order_requires_role(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('ord_guest', 'guest')
+        r = staff_ai.staff_chat('buyurtma bajar', 'ord_guest')
+        self.assertFalse(r['ok'])
+        self.assertIn('ruxsat yo\'q', r['answer'])
