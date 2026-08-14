@@ -135,7 +135,9 @@ def _supervise(name, cmd):
             _log(name, f"YIQILDI (rc={rc}) — {backoff}s keyin qayta ishga tushadi")
         # rc=5 (user_client): sessiya bloklangan — qayta kirish kerak, tez-tez
         # urinish ma'nosiz. 5 daqiqada bir marta urinamiz.
-        if rc == 5 and name.upper() == 'USERCLIENT':
+        # rc=4 (EXIT_NOT_AUTHORIZED): sessiya noto'g'ri/bloklangan — ham faqat
+        # qayta kirish bilan hal bo'ladi, 5 daqiqada bir marta urinamiz.
+        if rc in (4, 5) and name.upper() == 'USERCLIENT':
             backoff = 300
         # Admin panel orqali qayta kirish tugallanganda _restart_worker()
         # shu flag faylni yaratadi — backoff'ni kutmasdan darhol qayta
