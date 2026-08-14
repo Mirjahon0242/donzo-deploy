@@ -561,9 +561,7 @@ async def _require_staff(update: Update) -> bool:
     tg_id = str(update.effective_user.id)
     user = await db_user_by_tg(tg_id)
     if user is None or user.role not in STAFF_ROLES:
-        await update.effective_message.reply_html(
-            "❌ Bu buyruq faqat xodimlar uchun."
-        )
+        await update.effective_message.reply_html(_deny_with_sass())
         return False
     return True
 
@@ -573,11 +571,24 @@ async def _require_admin(update: Update) -> bool:
     tg_id = str(update.effective_user.id)
     user = await db_user_by_tg(tg_id)
     if user is None or user.role not in ('super_admin', 'admin'):
-        await update.effective_message.reply_html(
-            "❌ Bu buyruq faqat adminlar uchun."
-        )
+        await update.effective_message.reply_html(_deny_with_sass())
         return False
     return True
+
+
+def _deny_with_sass() -> str:
+    """Ruxsatsiz buyruq uchun kinoyali rad javobi (JARVIS uslubi, haqoratsiz)."""
+    import random
+    variants = [
+        "😏 Qiziqarli urinish, lekin yo'q. Bu tugma faqat egam uchun — sizda esa faqat qiziquvchanlik ko'ryapman.",
+        "🙃 Kechirasiz, bu buyruq ruxsat talab qiladi. Sizning ismingiz ruxsat ro'yxatida yo'q, afsuski.",
+        "😌 Harakat uchun rahmat, lekin bu yerda sizning vakolatingiz yetmaydi. Egamga murojaat qiling — u hal qiladi.",
+        "🧐 Bu tugmani bosishga urinish — jasorat, lekin oqibat yo'q. Bu kalitlar faqat egamning qo'lida.",
+        "😏 Men sizni yaxshi ko'raman, lekin bu buyruqni sizga bermaganman. Egam bilan maslahatlashib ko'ring.",
+        "🙂 Hmm, yo'q. Bu darajadagi tugmalar faqat egamga ochiq — boshqalar uchun eshik qulfli.",
+        "😄 Urinish qadrlanadi, natija esa — rad. Bu buyruq faqat adminlar uchun, siz esa hozircha tomoshabinsiz.",
+    ]
+    return random.choice(variants)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -814,7 +825,7 @@ async def _security_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     tg_id = str(update.effective_user.id)
     user = await db_user_by_tg(tg_id)
     if user is None or user.role not in ('super_admin', 'admin'):
-        await query.answer('❌ Bu harakat faqat adminlar uchun')
+        await query.answer(_deny_with_sass())
         return
 
     from apps.security import services as sec_services
@@ -885,7 +896,7 @@ async def _suspicious_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # Every staff member RECEIVES the alert, but only admins may MOVE MONEY
     # (the admin-panel approve endpoint is admin-only — keep parity).
     if user is None or user.role not in ('super_admin', 'admin'):
-        await query.answer('❌ Bu harakat faqat adminlar uchun')
+        await query.answer(_deny_with_sass())
         return
 
     from apps.cardpay import services as cardpay_services
