@@ -881,7 +881,8 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text or text.startswith('/'):
         return
 
-    # Trigger: botga reply / bot @-mention / shaxsiy chat
+    # Trigger: botga reply / bot @-mention / "donzo" bilan boshlangan xabar /
+    # shaxsiy chat
     is_reply_to_bot = False
     if msg.reply_to_message and msg.reply_to_message.from_user:
         rfu = msg.reply_to_message.from_user
@@ -895,8 +896,9 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         bot_username = ''
     mentioned = bool(bot_username) and f'@{bot_username.lower()}' in text.lower()
+    starts_with_donzo = re.match(r'^donzo[\s,:!.]*', text, flags=re.IGNORECASE) is not None
     is_private = bool(msg.chat) and msg.chat.type == 'private'
-    if not (is_reply_to_bot or mentioned or is_private):
+    if not (is_reply_to_bot or mentioned or starts_with_donzo or is_private):
         return
 
     # Faqat staff
@@ -906,27 +908,18 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mentioned and bot_username:
         text = re.sub(rf'@{re.escape(bot_username)}\b', '', text, flags=re.IGNORECASE).strip()
+    if starts_with_donzo:
+        text = re.sub(r'^donzo[\s,:!.]*', '', text, flags=re.IGNORECASE).strip()
     if not text:
         text = 'Salom! DONZO tizimi haqida nima bilmoqchisiz?'
 
     bump(updates=1, messages=1, command='ai')
-    try:
-        thinking = await msg.reply_html("🤖 <b>DONZO AI</b> — tahlil qilyapman, bir zum...")
-    except Exception:
-        thinking = None
 
     from apps.security import staff_ai
     result = await sync_to_async(staff_ai.staff_chat)(text, db_user.username or str(user.id))
     answer = result.get('answer') or 'Javob berilmadi.'
-    final = f"🤖 <b>DONZO AI</b>\n\n{staff_ai.escape_html(answer)}"
-    if thinking is not None:
-        try:
-            await thinking.edit_text(final, parse_mode='HTML')
-            return
-        except Exception:
-            pass
     try:
-        await msg.reply_html(final)
+        await msg.reply_html(staff_ai.escape_html(answer))
     except Exception:
         pass
 

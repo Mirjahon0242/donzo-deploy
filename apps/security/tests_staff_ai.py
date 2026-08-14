@@ -112,15 +112,9 @@ class StaffAiTests(TestCase):
         # To'liq og'ir kontekst YO'Q (tez javob uchun)
         self.assertNotIn('LIVE SYSTEM CONTEXT', p)
         self.assertNotIn('KATALOG', p)
-        # Lekin status satri va ser murojaati bor
-        self.assertIn('STATUS SNIPPET', p)
+        # Ser murojaati bor; hisobot majburiy emas (faqat so'ralganda)
         self.assertIn('ser', p)
-
-    def test_status_snippet_never_raises(self):
-        # _status_snippet hech qachon exception tashlamaydi
-        out = staff_ai._status_snippet()
-        self.assertIsInstance(out, str)
-        self.assertTrue(out.startswith('📊'))
+        self.assertNotIn('STATUS SNIPPET', p)
 
     def test_greeting_uses_ser_addressing_and_no_fixed_text(self):
         # Persona'da doimiy matn yo'q — javob Gemini'ga yuborilgan savolga mos

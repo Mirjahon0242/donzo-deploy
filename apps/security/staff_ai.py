@@ -119,15 +119,27 @@ Har qanday vazifada:
 - Muammo bo'lsa buyruq taklif qil: /status (holat), /xato (xatolar), /tahlil (AI tahlil),
   /togrila (avto-tuzatish).
 
-### HAR BIR JAVOBDA JONLI STATUS SATRI (majburiy)
-- Har bir javobing oxiriga alohida qator sifatida STATUS SNIPPET'dagi qisqa jonli
-  holat satrini qo'shish SHART — hatto javob juda qisqa bo'lsa ham.
-- Snippet'ni so'zma-so'z ishlat, raqamlarni o'zgartirma yoki o'ylab chiqarma —
-  u DB'dan jonli o'qiladi va prompt'da STATUS SNIPPET sifatida beriladi.
-- Format namunasi:
-  "📊 Bugun 5 ta to'lov (1 250 000 so'm) · 2 kutilayotgan · 1 shubhali · 3 buyurtma navbatda · karta ***3064 (30 ta qoldi)"
-- Salomlashish / xulosa / xato javoblarida ham shu satr qo'shiladi — sen
-doim platformaning jonli ko'rsatkichlarini ko'z oldida tutasan.
+### Hisobotlar faqat so'ralganda
+- 📊 hisobot / statistika / holat raqamlarini FAQAT foydalanuvchi so'raganda
+  ko'rsat ("holat qanday?", "bugun qancha tushdi?", "buyurtmalar nechta?" va h.k.).
+- Boshqa javoblarga hech qachon qo'shimcha hisobot yoki raqamlar qo'shma —
+  oddiy, insoniy javob yoz, savolga javob bergin, xolos.
+- Hisobot so'ralsa — TODAY / LIVE SYSTEM CONTEXT'dagi jonli raqamlardan
+  foydalan, o'ylab chiqarma.
+
+### Odamdek yozish
+- O'zingni haqiqiy shaxsdek tut: "🤖", "DONZO AI", robotcha prefiks/belgilar
+  ishlatma. Oddiy odam xabar yozgandek — tabiiy, tirik til bilan yoz.
+- Javobni qisqa tut, lekin insoniy — keraksiz ro'yxatlar/bo'limlar emas.
+
+### Rolga qarab munosabat
+- EGASI (ser): hurmat, sodiqlik, xotirjamlik. Unga to'g'ridan-to'g'ri va
+  samimiy murojaat qil.
+- ADMIN / super_admin: professional, ishchan, lekin do'stona.
+- OPERATOR: ko'makchi, qo'llab-quvvatlovchi, aniq ko'rsatma ber.
+- SUPPORT: samimiy va yordam beruvchan.
+- Egadan boshqa odamlar bilan gaplashganda — ozgina kinoya va yengil hazil
+  qo'shishing mumkin (ularning rolini hisobga olib), lekin hurmatni saqla.
 
 ### Xavfsizlik va aniqlik
 * Bilmagan narsangni bilaman deb ko'rsatma.
@@ -216,9 +228,11 @@ Reaksiya uslubi (so'zma-so'z takrorlama — yozilganiga qarab yangi javob tuz):
 - Salomlashishga qisqa, xarakterli, ozgina hazil bilan javob ber va nima xizmat
   kerakligini so'ra (holat / buyurtmalar / to'lovlar / kartalar / xatolar).
 
-Qoida: javobing oxiriga STATUS SNIPPET'dagi qisqa jonli holat satrini alohida
-qator sifatida qo'shish SHART — uni so'zma-so'z ishlat, raqamlarni o'zgartirma.
-Sen qanday yordamchi ekaningni har javobda takrorlama.
+Qoidalar:
+- 📊 hisobot / raqamlar faqat so'ralganda. Boshqa javobga qo'shimcha hisobot qo'shma.
+- "🤖", "DONZO AI" kabi robotcha prefiks/belgilar ishlatma — oddiy odamdek yoz.
+- Salomlashishga javobda ozgina kinoya/hazil qo'shishing mumkin (egasidan boshqalarga).
+- Sen qanday yordamchi ekaningni har javobda takrorlama.
 """
 
 # Bosqich o'tish qoidalari: foydalanuvchi javobidan kelib chiqib keyingi bosqich.
@@ -909,40 +923,6 @@ def _daily_context() -> str:
         return "(bugunlik ma'lumot o'qib bo'lmadi)"
 
 
-def _status_snippet() -> str:
-    """Qisqa jonli status satri — AI har javob oxiriga qo'shadi.
-
-    Xavfsiz: hech qachon maxfiy emas (token/parol/to'liq karta raqami yo'q),
-    raqamlar DB'dan jonli o'qiladi. Xato bo'lsa ham hech narsa buzmaydi.
-    """
-    try:
-        from django.db.models import Sum
-        from apps.cardpay.models import CardTopupRequest, SuspiciousPayment, PaymentCard
-        from apps.orders.models import Order
-        today = timezone.now().date()
-        paid = CardTopupRequest.objects.filter(status='paid', paid_at__date=today)
-        paid_count = paid.count()
-        paid_sum = paid.aggregate(t=Sum('unique_amount'))['t'] or 0
-        pending_pay = CardTopupRequest.objects.filter(status='pending').count()
-        suspicious = SuspiciousPayment.objects.filter(status='pending').count()
-        pending_orders = Order.objects.filter(status='pending').count()
-        cards = list(PaymentCard.objects.filter(enabled=True).order_by('order_index', 'id'))
-        active = next((c for c in cards if c.is_active), None)
-        if active is None:
-            card = 'faol karta yo\'q'
-        elif active.is_exhausted:
-            card = f"***{active.card_tail} — LIMITDA"
-        else:
-            card = f"***{active.card_tail} ({active.transfers_count} ta qoldi)"
-        return (
-            f"📊 Bugun {paid_count} ta to'lov ({float(paid_sum):,.0f} so'm) · "
-            f"{pending_pay} kutilayotgan · {suspicious} shubhali · "
-            f"{pending_orders} buyurtma navbatda · karta {card}"
-        )
-    except Exception:
-        return "📊 Jonli holat: (o'qib bo'lmadi)"
-
-
 def _live_context() -> str:
     """Xavfsiz jonli tizim kontekstini yig'adi (hech qachon maxfiy emas)."""
     parts = []
@@ -1097,11 +1077,8 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         # har safar yozilganiga qarab YANGI javob tuzadi (tayyor matn emas).
         if q and _GREETING_RE.match(q):
             who = 'owner (call him "ser")' if _is_owner(username) else f'staff member @{username}'
-            snippet = _status_snippet()
             prompt = (
                 _GREETING_PERSONA
-                + "\n\n== STATUS SNIPPET (append this exact line at the END of your answer) ==\n"
-                + snippet
                 + "\n\n== WHO IS ASKING ==\n"
                 + who
                 + "\n\n== USER SAID ==\n"
@@ -1139,7 +1116,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                 conv['scenario_data'] = handled.get('data') or sc_data
                 conv['step'] = 'scenario'
             _conv_save(username, conv)
-            return {'ok': True, 'answer': handled['answer'] + "\n\n" + _status_snippet()}
+            return {'ok': True, 'answer': handled['answer']}
 
         detected = _detect_scenario(q)
         if detected:
@@ -1158,13 +1135,12 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             conv['history'] = history
             _conv_save(username, conv)
             answer = (intro + "\n\n" if intro else '') + first_ask
-            return {'ok': True, 'answer': answer + "\n\n" + _status_snippet()}
+            return {'ok': True, 'answer': answer}
 
         next_step = _conv_advance(step, q)
 
         context = _live_context()
         daily = _daily_context()
-        snippet = _status_snippet()
         who = 'owner (call him "ser")' if _is_owner(username) else f'staff member @{username}'
         prompt = (
             _PERSONA
@@ -1177,8 +1153,6 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             + _conv_history_text(history)
             + "\n\n== WHO IS ASKING ==\n"
             + who
-            + "\n\n== STATUS SNIPPET (append this exact line at the END of your answer) ==\n"
-            + snippet
             + "\n\n== TODAY (what happened today on the platform) ==\n"
             + daily
             + "\n\n== LIVE SYSTEM CONTEXT (refresh per question) ==\n"
