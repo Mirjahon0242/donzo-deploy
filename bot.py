@@ -20,6 +20,7 @@ SynchronousOnlyOperation.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -980,6 +981,85 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+async def _transcribe_voice(bot, file_id: str) -> str:
+    """Ovozli xabarni Gemini orqali matnga aylantiradi. Returns matn yoki ''."""
+    try:
+        from apps.settings_app.models import Setting
+        key = Setting.get_setting('gemini_api_key', '') or ''
+        model = Setting.get_setting('gemini_model', 'gemini-1.5-flash') or 'gemini-1.5-flash'
+        if not key:
+            return ''
+        import base64
+        import io
+        import urllib.request
+        file = await bot.get_file(file_id)
+        # Telegram voice = OGG/Opus; download as bytes
+        b = io.BytesIO()
+        await file.download_to_memory(b)
+        audio_b64 = base64.b64encode(b.getvalue()).decode('ascii')
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        body = {
+            'contents': [{'parts': [
+                {'inline_data': {'mime_type': 'audio/ogg', 'data': audio_b64}},
+                {'text': 'Bu ovozli xabarni matnga aylantir. Aytilgan gaplarni to\'liq yoz. '
+                         'Faqat transkripsiya — izoh, tarjima yoki qo\'shimcha yozma.'},
+            ]}],
+            'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 2048},
+        }
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}, method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode('utf-8')
+        data = json.loads(raw)
+        return (data['candidates'][0]['content']['parts'][0]['text'] or '').strip()
+    except Exception as exc:
+        logging.getLogger(__name__).warning('transcribe voice failed: %s: %s', type(exc).__name__, str(exc)[:150])
+        return ''
+
+
+async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Staff guruhida ovozli xabarni eshitib, transkripsiya qilib, kerak bo'lsa javob yozadi.
+
+    Faqat staff (super_admin/admin/operator/support). Ovozli xabar matnga
+    aylantiriladi va staff_ai orqali DONZO AI javob beradi (agar savol bo'lsa).
+    """
+    msg = update.effective_message
+    user = update.effective_user
+    if msg is None or user is None:
+        return
+    voice = msg.voice or msg.audio
+    if voice is None:
+        return
+    db_user = await db_user_by_tg(str(user.id))
+    if db_user is None or db_user.role not in STAFF_ROLES:
+        return
+
+    bump(updates=1, messages=1, command='voice')
+    # Eshitayotganini bildiradi (tezkor javob)
+    try:
+        await msg.reply_text("🎧 Eshitib tushunyapman...")
+    except Exception:
+        pass
+
+    text = await _transcribe_voice(context.bot, voice.file_id)
+    if not text:
+        try:
+            await msg.reply_text("Kechirasiz, ovozli xabarni tushuna olmadim. Matn yozib yuboring.")
+        except Exception:
+            pass
+        return
+
+    from apps.security import staff_ai
+    result = await sync_to_async(staff_ai.staff_chat)(text, db_user.username or str(user.id))
+    answer = result.get('answer') or 'Javob berilmadi.'
+    try:
+        await msg.reply_html(staff_ai.escape_html(answer))
+    except Exception:
+        pass
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline button clicks (balance / orders / security / suspicious)."""
     query = update.callback_query
@@ -1067,6 +1147,8 @@ def main():
     application.add_handler(CommandHandler('tunnel', tunnel_command))
     # DONZO AI — staff guruhida botga reply / @-mention / shaxsiy xabar
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, staff_ai_handler))
+    # Ovozli xabarlar — staff guruhida eshitib tushunadi (Gemini transkripsiya)
+    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
     # ── Token validation (getMe) — records valid/invalid so the admin
