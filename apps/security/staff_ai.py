@@ -338,6 +338,102 @@ _SCENARIO_INTRO = {
 
 _CANCEL_WORDS = ('bekor', 'toxtat', "to'xtat", 'yoq', "yo'q", 'qayt', 'ortga', 'kerak emas', 'cancel')
 
+# ── SO'ZSIZ BUYRUK (immediate) ────────────────────────────────────────────
+# "darhol qil" / "hoziroq" degan so'zlar bilan buyruq bersangiz — stsenariy
+# tasdiqlash savollarini o'tkazib, DARHOL bajariladi (faqat egasi/super_admin).
+_IMMEDIATE_WORDS = ('darhol', 'hoziroq', 'zudlik bilan', 'immediately', 'savolsiz', 'so\'zsiz', 'suzsiz', 'tezda')
+
+
+def _is_immediate(q: str) -> bool:
+    """Savolda "darhol qil" buyrug'i bormi."""
+    ql = (q or '').lower()
+    return any(w in ql for w in _IMMEDIATE_WORDS)
+
+
+def _strip_immediate(q: str) -> str:
+    """Savoldan "darhol/hoziroq" so'zlarini olib tashlab, qolgan matnni qaytaradi."""
+    ql = (q or '').strip()
+    for w in ('darhol ', 'hoziroq ', 'zudlik bilan ', 'immediately ', 'tezda ', 'savolsiz ', 'so\'zsiz ', 'suzsiz '):
+        ql = ql.replace(w, '').replace(w.capitalize(), '')
+    return ql.strip()
+
+
+def _try_immediate_action(scenario: str, q: str, username: str) -> dict or None:
+    """Savoldagi ma'lumotdan to'liq buyruqni ajratib, DARHOL bajarishga urinadi.
+
+    Faqat egasi (super_admin) uchun. Muvaffaqiyatli bo'lsa {'ok', 'answer'},
+    ma'lumot yetarli bo'lmasa None (oddiy stsenariy boshlanadi).
+    """
+    if not _is_immediate(q):
+        return None
+    role = _user_role(username)
+    if role != 'super_admin':
+        # Egasi emas — immediate rejim ruxsat emas, oddiy stsenariyga tushadi
+        return None
+    text = _strip_immediate(q).lower()
+    try:
+        if scenario == 'complete_order':
+            # "ORD-123 bajar" / "123 bajar"
+            import re as _re
+            m = _re.search(r'(?:ord[-\s]?)?(\d+)', text)
+            if m:
+                data = {'pick': m.group(1)}
+                return _run_scenario_action(scenario, data, username)
+        if scenario == 'change_price':
+            # "3 25000" (paket raqami + narx)
+            parts = text.split()
+            nums = [p for p in parts if p.replace('.', '').replace(',', '').isdigit()]
+            if len(nums) >= 2:
+                data = {'pick': nums[0], 'price': nums[1]}
+                return _run_scenario_action(scenario, data, username)
+        if scenario == 'topup_balance':
+            # "user1 100000" (username + summa)
+            parts = text.split()
+            nums = [p for p in parts if p.replace('.', '').replace(',', '').isdigit()]
+            words = [p for p in parts if not p.replace('.', '').replace(',', '').isdigit()]
+            if words and nums:
+                data = {'username': words[-1].lstrip('@'), 'amount': nums[0]}
+                return _run_scenario_action(scenario, data, username)
+        if scenario == 'toggle_service':
+            # "2" (raqam)
+            parts = text.split()
+            if parts and parts[0].isdigit():
+                data = {'pick': parts[0]}
+                return _run_scenario_action(scenario, data, username)
+        if scenario == 'add_package':
+            # "2 1000 UC 45000" (xizmat raqami + nom + narx)
+            parts = text.split()
+            nums = [p for p in parts if p.replace('.', '').replace(',', '').isdigit()]
+            if len(nums) >= 2:
+                sidx, price = nums[0], nums[-1]
+                name_parts = parts[1:]
+                name_parts = [p for p in name_parts if not p.replace('.', '').replace(',', '').isdigit()]
+                if name_parts:
+                    data = {'pick': sidx, 'name': ' '.join(name_parts), 'price': price}
+                    return _run_scenario_action(scenario, data, username)
+        if scenario == 'new_card':
+            # "8600... JAVLONBEK XALQ 5000000 30"
+            import re as _re2
+            m = _re2.search(r'\d{12,19}', text)
+            if m:
+                num = m.group(0)
+                rest = text.replace(num, '').strip()
+                words = rest.split()
+                holder, bank, limit = '', '', ''
+                for i, w in enumerate(words):
+                    if w.replace('.', '').replace(',', '').isdigit():
+                        continue
+                    if not holder:
+                        holder = w
+                    elif not bank:
+                        bank = w
+                if holder:
+                    data = {'number': num, 'holder': holder, 'bank': bank or '—', 'limit': '0, 0'}
+                    return _run_scenario_action(scenario, data, username)
+    except Exception as exc:
+        logger.warning('immediate action failed: %s', type(exc).__name__)
+    return None
+
 
 def _user_role(username: str):
     """Username bo'yicha foydalanuvchi rolini qaytaradi (yoki None)."""
@@ -1120,6 +1216,15 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             allowed = _SCENARIO_DEFS[detected]['roles']
             if role not in allowed:
                 return {'ok': False, 'answer': f"Bu stsenariy uchun ruxsat yo'q (kerakli rol: {', '.join(allowed)})."}
+            # SO'ZSIZ BUYRUK: "darhol qil" deyilsa — tasdiqlash savollarini
+            # o'tkazib, savoldagi ma'lumotdan DARHOL bajarishga urinamiz.
+            immediate_res = _try_immediate_action(detected, q, username)
+            if immediate_res is not None:
+                history.append({'role': 'user', 'text': q[:400]})
+                history = history[-CONV_HISTORY_MAX * 2:]
+                conv['history'] = history
+                _conv_save(username, conv)
+                return {'ok': immediate_res.get('ok', True), 'answer': immediate_res.get('answer', 'Bajarildi.')}
             conv['scenario'] = detected
             conv['scenario_step'] = _SCENARIO_DEFS[detected]['steps'][0]
             conv['scenario_data'] = {}

@@ -447,3 +447,64 @@ class StaffAiTests(TestCase):
         self.assertIn('PUBG UC', ctx)
         self.assertIn('660 UC', ctx)
         self.assertIn('80,000', ctx)
+
+    def test_immediate_topup_no_confirm(self):
+        # "darhol qil" — tasdiqlash savolisiz darhol bajariladi (super_admin)
+        from apps.users.models import User
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('im_owner', 'super_admin')
+        self._mk_user('im_customer', 'customer')
+        r = staff_ai.staff_chat('darhol balans to\'ldirish im_customer 75000', 'im_owner')
+        self.assertTrue(r['ok'])
+        u = User.objects.get(username='im_customer')
+        self.assertEqual(float(u.balance), 75000.0)
+
+    def test_immediate_change_price_no_confirm(self):
+        # "darhol narx" — tasdiqlashsiz narx o'zgaradi
+        from apps.services.models import Service, Package, Category
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('im_admin2', 'super_admin')
+        cat = Category.objects.create(name='O\'yinlar', slug='oyinlar-im')
+        svc = Service.objects.create(name='PUBG', slug='pubg-im', category=cat)
+        pkg = Package.objects.create(service=svc, name='660 UC', amount_label='660', price='80000')
+        r = staff_ai.staff_chat('darhol narxni o\'zgartirish 1 95000', 'im_admin2')
+        self.assertTrue(r['ok'])
+        pkg.refresh_from_db()
+        self.assertEqual(float(pkg.price), 95000.0)
+
+    def test_immediate_complete_order_no_confirm(self):
+        # "darhol buyurtma bajar" — tasdiqlashsiz bajariladi
+        from apps.orders.models import Order
+        from apps.services.models import Service, Package, Category
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('im_oper2', 'super_admin')
+        customer = self._mk_user('im_cust2', 'customer')
+        cat = Category.objects.create(name='O\'yinlar', slug='oyinlar-im2')
+        svc = Service.objects.create(name='FF', slug='ff-im', category=cat)
+        pkg = Package.objects.create(service=svc, name='1000 Donat', amount_label='1000', price='45000')
+        order = Order.objects.create(
+            order_number='ORD-888', customer=customer, service=svc, package=pkg,
+            field_values={}, customer_name='Test', customer_telegram='@t',
+            total_price='45000', status='pending',
+        )
+        r = staff_ai.staff_chat('darhol buyurtmani bajarish ORD-888', 'im_oper2')
+        self.assertTrue(r['ok'])
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'completed')
+
+    def test_immediate_denied_for_non_owner(self):
+        # Egasi bo'lmagan (admin) uchun immediate rejim ishlamaydi — oddiy stsenariy
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('im_admin3', 'admin')
+        self._mk_user('im_cust3', 'customer')
+        r = staff_ai.staff_chat('darhol balans to\'ldirish im_cust3 1000', 'im_admin3')
+        # Admin uchun immediate ruxsat emas — stsenariy savoli keladi
+        self.assertTrue(r['ok'])
+        self.assertNotIn('✅', r['answer'])
+        from apps.users.models import User
+        u = User.objects.get(username='im_cust3')
+        self.assertEqual(float(u.balance), 0.0)
