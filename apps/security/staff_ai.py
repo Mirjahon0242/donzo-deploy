@@ -109,6 +109,16 @@ Har qanday vazifada:
 - Muammo bo'lsa buyruq taklif qil: /status (holat), /xato (xatolar), /tahlil (AI tahlil),
   /togrila (avto-tuzatish).
 
+### HAR BIR JAVOBDA JONLI STATUS SATRI (majburiy)
+- Har bir javobing oxiriga alohida qator sifatida STATUS SNIPPET'dagi qisqa jonli
+  holat satrini qo'shish SHART — hatto javob juda qisqa bo'lsa ham.
+- Snippet'ni so'zma-so'z ishlat, raqamlarni o'zgartirma yoki o'ylab chiqarma —
+  u DB'dan jonli o'qiladi va prompt'da STATUS SNIPPET sifatida beriladi.
+- Format namunasi:
+  "📊 Bugun 5 ta to'lov (1 250 000 so'm) · 2 kutilayotgan · 1 shubhali · 3 buyurtma navbatda · karta ***3064 (30 ta qoldi)"
+- Salomlashish / xulosa / xato javoblarida ham shu satr qo'shiladi — JARVIS
+  doim platformaning jonli ko'rsatkichlarini ko'z oldida tutadi.
+
 ### Xavfsizlik va aniqlik
 * Bilmagan narsangni bilaman deb ko'rsatma.
 * Taxminni fakt sifatida taqdim etma.
@@ -281,6 +291,40 @@ def _conv_history_text(history: list) -> str:
     return '\n'.join(lines)
 
 
+def _status_snippet() -> str:
+    """Qisqa jonli status satri — JARVIS har javob oxiriga qo'shadi.
+
+    Xavfsiz: hech qachon maxfiy emas (token/parol/to'liq karta raqami yo'q),
+    raqamlar DB'dan jonli o'qiladi. Xato bo'lsa ham hech narsa buzmaydi.
+    """
+    try:
+        from django.db.models import Sum
+        from apps.cardpay.models import CardTopupRequest, SuspiciousPayment, PaymentCard
+        from apps.orders.models import Order
+        today = timezone.now().date()
+        paid = CardTopupRequest.objects.filter(status='paid', paid_at__date=today)
+        paid_count = paid.count()
+        paid_sum = paid.aggregate(t=Sum('unique_amount'))['t'] or 0
+        pending_pay = CardTopupRequest.objects.filter(status='pending').count()
+        suspicious = SuspiciousPayment.objects.filter(status='pending').count()
+        pending_orders = Order.objects.filter(status='pending').count()
+        cards = list(PaymentCard.objects.filter(enabled=True).order_by('order_index', 'id'))
+        active = next((c for c in cards if c.is_active), None)
+        if active is None:
+            card = 'faol karta yo\'q'
+        elif active.is_exhausted:
+            card = f"***{active.card_tail} — LIMITDA"
+        else:
+            card = f"***{active.card_tail} ({active.transfers_count} ta qoldi)"
+        return (
+            f"📊 Bugun {paid_count} ta to'lov ({float(paid_sum):,.0f} so'm) · "
+            f"{pending_pay} kutilayotgan · {suspicious} shubhali · "
+            f"{pending_orders} buyurtma navbatda · karta {card}"
+        )
+    except Exception:
+        return "📊 Jonli holat: (o'qib bo'lmadi)"
+
+
 def _live_context() -> str:
     """Xavfsiz jonli tizim kontekstini yig'adi (hech qachon maxfiy emas)."""
     parts = []
@@ -401,7 +445,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         # Tezkor salomlashish — Gemini'siz JARVIS javob (tez, harakterli).
         q = (question or '').strip()
         if q and _GREETING_RE.match(q):
-            return {'ok': True, 'answer': random.choice(_GREETING_ANSWER)}
+            return {'ok': True, 'answer': random.choice(_GREETING_ANSWER) + "\n\n" + _status_snippet()}
 
         if not _throttle_ok(username):
             return {
@@ -417,6 +461,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         next_step = _conv_advance(step, q)
 
         context = _live_context()
+        snippet = _status_snippet()
         who = 'owner (ustoz)' if _is_owner(username) else f'staff member @{username}'
         prompt = (
             _PERSONA
@@ -429,6 +474,8 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             + _conv_history_text(history)
             + "\n\n== WHO IS ASKING ==\n"
             + who
+            + "\n\n== STATUS SNIPPET (append this exact line at the END of your answer) ==\n"
+            + snippet
             + "\n\n== LIVE SYSTEM CONTEXT (refresh per question) ==\n"
             + context
             + "\n\n== STAFF QUESTION ==\n"

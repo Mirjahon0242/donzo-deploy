@@ -91,6 +91,23 @@ class StaffAiTests(TestCase):
                 r = staff_ai.staff_chat(g, 'ai_user')
                 self.assertTrue(r['ok'], g)
 
+    def test_greeting_includes_live_status_snippet(self):
+        # JARVIS har javobida jonli status satri qo'shadi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': True, 'answer': 'GEMINI'}):
+            r = staff_ai.staff_chat('Salom!', 'ai_user')
+        self.assertTrue(r['ok'])
+        # Status snippet belgisi javobda bor (hatto DB bo'sh bo'lsa ham fallback)
+        self.assertIn('📊', r['answer'])
+
+    def test_status_snippet_never_raises(self):
+        # _status_snippet hech qachon exception tashlamaydi
+        out = staff_ai._status_snippet()
+        self.assertIsInstance(out, str)
+        self.assertTrue(out.startswith('📊'))
+
     def test_greeting_does_not_consume_throttle(self):
         Setting.set_setting('gemini_api_key', 'fake-key')
         Setting.set_setting('security_ai_enabled', 'true')
