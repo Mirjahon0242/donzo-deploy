@@ -74,33 +74,23 @@ class StaffAiTests(TestCase):
         self.assertIn('ok', r)
         self.assertFalse(r['ok'])
 
-    def test_greeting_gets_instant_jarvis_answer(self):
-        # Salomlashish Gemini'siz tezkor javob oladi (JARVIS uslubi)
+    def test_greeting_goes_through_gemini_dynamic(self):
+        # Salomlashish ham Gemini orqali DINAMIK javob oladi — tayyor matn yo'q.
         Setting.set_setting('gemini_api_key', 'fake-key')
         Setting.set_setting('security_ai_enabled', 'true')
         with unittest.mock.patch.object(staff_ai, '_call_gemini',
                                         return_value={'ok': True, 'answer': 'GEMINI'}) as mock_call:
             r = staff_ai.staff_chat('Salom!', 'ai_user')
             self.assertTrue(r['ok'])
-            self.assertTrue(r['answer'] and len(r['answer']) > 0)
-            mock_call.assert_not_called()  # Gemini chaqirilmadi
-        # Variantlar
+            self.assertEqual(r['answer'], 'GEMINI')
+            mock_call.assert_called_once()  # Gemini chaqirildi → javob dinamik
+        # Variantlar ham Gemini orqali
         for g in ['Assalomu alaykum', 'hey', 'Qalaysiz?', 'Hi', 'Bormisiz']:
             with unittest.mock.patch.object(staff_ai, '_call_gemini',
                                             return_value={'ok': True, 'answer': 'GEMINI'}):
                 r = staff_ai.staff_chat(g, 'ai_user')
                 self.assertTrue(r['ok'], g)
-
-    def test_greeting_includes_live_status_snippet(self):
-        # JARVIS har javobida jonli status satri qo'shadi
-        Setting.set_setting('gemini_api_key', 'fake-key')
-        Setting.set_setting('security_ai_enabled', 'true')
-        with unittest.mock.patch.object(staff_ai, '_call_gemini',
-                                        return_value={'ok': True, 'answer': 'GEMINI'}):
-            r = staff_ai.staff_chat('Salom!', 'ai_user')
-        self.assertTrue(r['ok'])
-        # Status snippet belgisi javobda bor (hatto DB bo'sh bo'lsa ham fallback)
-        self.assertIn('📊', r['answer'])
+                self.assertEqual(r['answer'], 'GEMINI', g)
 
     def test_status_snippet_never_raises(self):
         # _status_snippet hech qachon exception tashlamaydi
@@ -108,17 +98,23 @@ class StaffAiTests(TestCase):
         self.assertIsInstance(out, str)
         self.assertTrue(out.startswith('📊'))
 
-    def test_greeting_does_not_consume_throttle(self):
+    def test_greeting_uses_ser_addressing_and_no_fixed_text(self):
+        # Persona'da doimiy matn yo'q — javob Gemini'ga yuborilgan savolga mos
+        # tuziladi. Bu yerda prompt'da 'ser' murojaati borligini tekshiramiz.
         Setting.set_setting('gemini_api_key', 'fake-key')
         Setting.set_setting('security_ai_enabled', 'true')
-        # Limitni to'ldiramiz
-        Setting.set_setting('staff_ai_throttle_ai_user',
-                            json.dumps([time.time()] * staff_ai.THROTTLE_LIMIT))
-        with unittest.mock.patch.object(staff_ai, '_call_gemini',
-                                        return_value={'ok': True, 'answer': 'GEMINI'}) as mock_call:
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'GEMINI'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
             r = staff_ai.staff_chat('Salom!', 'ai_user')
-            self.assertTrue(r['ok'])  # Throttle'ga qaramay javob beradi
-            mock_call.assert_not_called()
+            self.assertTrue(r['ok'])
+        # Persona 'ser' murojaatini o'z ichiga oladi va tayyor greeting ro'yxati yo'q
+        self.assertIn('ser', captured['prompt'])
+        self.assertNotIn('_GREETING_ANSWER', captured['prompt'])
 
     def test_non_greeting_hits_throttle(self):
         Setting.set_setting('gemini_api_key', 'fake-key')
