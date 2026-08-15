@@ -273,6 +273,106 @@ class StaffAiTests(TestCase):
         return User.objects.create_user(username=username, email=f'{username}@t.uz',
                                         password='x12345678', role=role)
 
+    # ── FOYDALANUVCHIGA SHAXSIY (LICHKA) XABAR ────────────────────────────
+
+    def test_send_user_message_owner_sends(self):
+        # "user ga habar yoz: matn" → foydalanuvchi lichkasiga xabar yuboriladi
+        from apps.users.models import User
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('dm_owner', 'super_admin')
+        cust = self._mk_user('dm_customer', 'customer')
+        cust.telegram_id = '998991234567'
+        cust.save()
+        with unittest.mock.patch.object(staff_ai, '_dm_user', return_value=True) as dm:
+            r = staff_ai.staff_chat('dm_customer ga habar yoz: salom, buyurtmangiz tayyor', 'dm_owner')
+        self.assertTrue(r['ok'])
+        self.assertIn('yuborildi', r['answer'])
+        dm.assert_called_once()
+        sent_to, sent_text = dm.call_args[0]
+        self.assertEqual(sent_to.id, cust.id)
+        self.assertIn('buyurtmangiz tayyor', sent_text)
+        # Audit log yozilgan
+        from apps.audit_log.models import AuditLog
+        self.assertTrue(AuditLog.objects.filter(action='ai_dm_sent', target_id=cust.id).exists())
+
+    def test_send_user_message_find_by_telegram_username(self):
+        # @telegram_username orqali ham topiladi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('dm_owner2', 'super_admin')
+        cust = self._mk_user('dm_cust2', 'customer')
+        cust.telegram_username = 'ultra_user'
+        cust.telegram_id = '998111222333'
+        cust.save()
+        with unittest.mock.patch.object(staff_ai, '_dm_user', return_value=True):
+            r = staff_ai.staff_chat('@ultra_user ga habar yubor: salom dost', 'dm_owner2')
+        self.assertTrue(r['ok'])
+        self.assertIn('yuborildi', r['answer'])
+
+    def test_send_user_message_user_not_found(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('dm_owner3', 'super_admin')
+        r = staff_ai.staff_chat('nobody123 ga habar yoz: salom', 'dm_owner3')
+        self.assertFalse(r['ok'])
+        self.assertIn('topilmadi', r['answer'])
+
+    def test_send_user_message_no_telegram_id(self):
+        # Telegram'ga bog'lanmagan foydalanuvchiga xabar yuborib bo'lmaydi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('dm_owner4', 'super_admin')
+        self._mk_user('dm_notele', 'customer')
+        with unittest.mock.patch.object(staff_ai, '_dm_user', return_value=True) as dm:
+            r = staff_ai.staff_chat('dm_notele ga habar yoz: salom', 'dm_owner4')
+        self.assertFalse(r['ok'])
+        self.assertIn("bog'lanmagan", r['answer'])
+        dm.assert_not_called()
+
+    def test_send_user_message_denied_for_operator(self):
+        # Operator bu buyruqni ishlata olmaydi — oddiy AI oqimiga tushadi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        self._mk_user('dm_operator', 'operator')
+        with unittest.mock.patch.object(staff_ai, '_dm_user', return_value=True) as dm:
+            with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                            return_value={'ok': True, 'answer': 'oddiy javob'}):
+                r = staff_ai.staff_chat('dm_customer ga habar yoz: salom', 'dm_operator')
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['answer'], 'oddiy javob')  # DM yuborilmadi
+        dm.assert_not_called()
+
+    def test_dm_user_plain_text_no_html_parse(self):
+        # AI matni < > belgilar bilan ham buzilmasin — parse_mode YO'Q
+        from apps.users.models import User
+        Setting.set_setting('telegram_bot_token', '12345:TESTTOKEN')
+        cust = self._mk_user('dm_cust_plain', 'customer')
+        cust.telegram_id = '998777666555'
+        cust.save()
+        captured = {}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def fake_urlopen(req, timeout=0):
+            captured['body'] = json.loads(req.data.decode('utf-8'))
+            return _FakeResp()
+
+        with unittest.mock.patch.object(staff_ai.urllib.request, 'urlopen', side_effect=fake_urlopen):
+            ok = staff_ai._dm_user(cust, 'Salom <b>dost</b> & do''st!')
+        self.assertTrue(ok)
+        self.assertEqual(captured['body']['chat_id'], '998777666555')
+        self.assertEqual(captured['body']['text'], 'Salom <b>dost</b> & do''st!')
+        self.assertNotIn('parse_mode', captured['body'])  # HTML parse yo'q
+
     def test_scenario_new_card_requires_admin_role(self):
         Setting.set_setting('gemini_api_key', 'fake-key')
         Setting.set_setting('security_ai_enabled', 'true')

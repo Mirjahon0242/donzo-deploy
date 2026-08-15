@@ -1390,6 +1390,123 @@ def _is_owner(username: str) -> bool:
         return False
 
 
+# ── FOYDALANUVCHIGA SHAXSIY (LICHKA) TELEGRAM XABAR ───────────────────────
+# "user1 ga habar yoz: matn" / "foydalanuvchi @user1 ga xabar yubor matn" /
+# "user1 lichkaga habar yoz: matn" — DONZO bot orqali foydalanuvchining
+# shaxsiy Telegram chatiga xabar yuboradi.
+_SEND_MSG_RE = re.compile(
+    r'^\s*(?:foydalanuvchi\s+)?@?(?P<ref>[a-zA-Z0-9_.]{2,32})\s+ga\s+(?:lichkaga\s+)?'
+    r'(?:habar|xabar|sms|message|murojaat)\s+(?:yoz|yubor|jonat|ber|yozib\s+yubor|yuborib\s+yubor)'
+    r'\s*[:.,]?\s*(?P<text>.+?)\s*$',
+    re.IGNORECASE | re.DOTALL,
+)
+_SEND_MSG_RE2 = re.compile(
+    r'^\s*(?:foydalanuvchi\s+)?@?(?P<ref>[a-zA-Z0-9_.]{2,32})\s+(?:ga\s+)?lichkaga\s+'
+    r'(?:habar|xabar|sms|message)\s+(?:yoz|yubor|jonat|ber)\s*[:.,]?\s*(?P<text>.+?)\s*$',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _find_user(ref: str):
+    """Foydalanuvchini username / telegram_username / telegram_id / id bo'yicha topadi."""
+    try:
+        from apps.users.models import User
+        ref = (ref or '').strip().lstrip('@')
+        if not ref:
+            return None
+        if ref.isdigit():
+            u = User.objects.filter(telegram_id=ref).first()
+            if u:
+                return u
+            u = User.objects.filter(id=int(ref)).first()
+            if u:
+                return u
+        u = User.objects.filter(username__iexact=ref).first()
+        if u:
+            return u
+        u = User.objects.filter(telegram_username__iexact=ref).first()
+        if u:
+            return u
+    except Exception:
+        logger.warning('find_user failed for %s', ref)
+    return None
+
+
+def _dm_user(user, text: str) -> bool:
+    """Foydalanuvchining shaxsiy Telegram chatiga ODDIY matn yuboradi (no HTML).
+
+    AI matnida < > & kabi belgilar bo'lishi mumkin — parse_mode HTML ishlatilsa
+    ular xato beradi, shuning uchun matn oddiy yuboriladi. Never raises.
+    """
+    try:
+        import json
+        import urllib.request
+        from apps.settings_app.models import Setting
+        token = Setting.get_setting('telegram_bot_token', '') or ''
+        if not token or not getattr(user, 'telegram_id', None):
+            return False
+        payload = {
+            'chat_id': str(user.telegram_id),
+            'text': (text or '')[:4000],
+            'disable_web_page_preview': True,
+        }
+        req = urllib.request.Request(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return bool(json.loads(resp.read().decode('utf-8')).get('ok'))
+    except Exception as exc:
+        logger.warning('DM send failed: %s', type(exc).__name__)
+        return False
+
+
+def _handle_send_user_message(q: str, username: str) -> dict or None:
+    """Foydalanuvchiga shaxsiy (lichka) Telegram xabar yuborish buyrug'ini bajaradi.
+
+    Pattern: "user1 ga habar yoz: matn" / "foydalanuvchi @user1 ga xabar yubor matn".
+    Faqat egasi (super_admin) va admin. Matn mos kelmasa None — odatiy oqim
+    davom etadi. Javob: yuborildi / topilmadi / ruxsat yo'q.
+    """
+    try:
+        role = _user_role(username)
+        if role not in ('super_admin', 'admin'):
+            return None
+        m = _SEND_MSG_RE.match(q) or _SEND_MSG_RE2.match(q)
+        if not m:
+            return None
+        ref = m.group('ref').strip()
+        text = m.group('text').strip()
+        if not ref or not text:
+            return None
+        user = _find_user(ref)
+        if user is None:
+            return {'ok': False,
+                    'answer': f"@{ref} topilmadi. Username, telegram username yoki telegram ID ni tekshiring."}
+        if not getattr(user, 'telegram_id', None):
+            return {'ok': False,
+                    'answer': f"{user.username} Telegram'ga bog'lanmagan (telegram_id yo'q) — xabar yuborib bo'lmaydi."}
+        sent = _dm_user(user, text)
+        if sent:
+            try:
+                from apps.audit_log.models import AuditLog
+                from apps.users.models import User
+                actor = User.objects.filter(username=username).first()
+                AuditLog.objects.create(
+                    user=actor, action='ai_dm_sent',
+                    target_type='User', target_id=user.id,
+                    description=f"AI orqali foydalanuvchiga shaxsiy xabar yuborildi (text: {text[:120]})",
+                )
+            except Exception:
+                pass
+            return {'ok': True, 'answer': f"Habar yuborildi → {user.username} (shaxsiy chat)."}
+        return {'ok': False, 'answer': "Xabar yuborilmadi — Telegram xatosi. Bot token yoki foydalanuvchi blokini tekshiring."}
+    except Exception as exc:
+        logger.warning('send user message failed: %s', type(exc).__name__)
+        return None
+
+
 _PROACTIVE_PERSONA = """## SYSTEM PROMPT — O'Z HAYOTI BOR ODAM (proaktiv xabar)
 
 Sen DONZO — staff guruhining jonli a'zosi. Sen oddiy xizmat boti emassan:
@@ -1504,6 +1621,20 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             if result.get('ok'):
                 return {'ok': True, 'answer': result['answer']}
             return {'ok': False, 'error': 'network_error', 'answer': result['answer']}
+
+        # ── FOYDALANUVCHIGA SHAXSIY XABAR ──
+        # "user1 ga habar yoz: matn" — DONZO bot orqali foydalanuvchining
+        # shaxsiy Telegram chatiga xabar yuboradi (faqat egasi/admin).
+        dm_res = _handle_send_user_message(q, username)
+        if dm_res is not None:
+            conv = _conv_load(username)
+            history = conv.get('history', [])
+            history.append({'role': 'user', 'text': q[:400]})
+            history = history[-CONV_HISTORY_MAX * 2:]
+            conv['history'] = history
+            _conv_save(username, conv)
+            _memory_update(username, q, dm_res.get('answer', ''))
+            return {'ok': dm_res.get('ok', True), 'answer': dm_res.get('answer')}
 
         # ── Suhbat holatini yuklaymiz va yangi bosqichni hisoblaymiz ──
         conv = _conv_load(username)
