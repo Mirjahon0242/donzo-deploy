@@ -21,6 +21,59 @@ from .models import CardPaymentMessage, CardTopupRequest, SuspiciousPayment, par
 User = get_user_model()
 
 
+class HealthReportGraceTests(TestCase):
+    """Health report (15 daqiqalik DONZO HOLATI) — deploy/startup paytida
+    bot va user client hali ishga tushayotgan bo'lsa noto'g'ri ❌ ko'rsatmasligi."""
+
+    def _set_launcher_started(self, age_seconds: float):
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+        Setting.set_setting('cloud_launcher_started_at', ts.isoformat())
+
+    def _bot_uc_lines(self, report: str) -> str:
+        out = []
+        for line in report.splitlines():
+            if 'Bot (@DONZOROBOT)' in line or 'User Client' in line:
+                out.append(line.replace('<b>', '').replace('</b>', ''))
+        return '\n'.join(out)
+
+    def test_container_started_recently(self):
+        self._set_launcher_started(30)
+        self.assertTrue(services._container_started_recently())
+        self._set_launcher_started(30 * 60)
+        self.assertFalse(services._container_started_recently())
+        Setting.set_setting('cloud_launcher_started_at', '')
+        self.assertFalse(services._container_started_recently())
+
+    def test_bot_and_uc_starting_during_grace(self):
+        # Stats fayllari yo'q (yangi konteyner) + launcher hali yosh →
+        # bot va user client 'ishga tushmoqda…' ko'rsatiladi, ❌ emas.
+        self._set_launcher_started(30)
+        report = services.build_health_report()
+        lines = self._bot_uc_lines(report)
+        self.assertIn('ishga tushmoqda', lines)
+        self.assertNotIn('❌ Bot', lines)
+        self.assertNotIn('❌ User Client', lines)
+
+    def test_bot_lock_fallback_outside_grace(self):
+        # Grace o'tgan, stats fayli yo'q, lekin bot_polling_lock YANGI bo'lsa
+        # (har 30s yangilanadi) → bot tirik deb hisoblanadi.
+        import time as _t
+        self._set_launcher_started(30 * 60)
+        Setting.set_setting('bot_polling_lock', str(_t.time()))
+        report = services.build_health_report()
+        self.assertIn('ishlayapti', self._bot_uc_lines(report))
+
+    def test_uc_no_session_shows_waiting(self):
+        # Sessiya yo'q bo'lsa user client 'kirish kutilmoqda' — noto'g'ri
+        # 'o'lik' signali emas.
+        Setting.set_setting('user_client_session_b64', '')
+        self._set_launcher_started(30 * 60)
+        report = services.build_health_report()
+        lines = self._bot_uc_lines(report)
+        self.assertIn('kirish kutilmoqda', lines)
+
+
 class StaffSuspiciousNotifyTests(TestCase):
     """Direct staff Telegram alerts for suspicious payments (report group
     bundan tashqari) — throttled, staff-only, with inline buttons."""

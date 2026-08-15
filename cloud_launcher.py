@@ -279,6 +279,18 @@ def _health_report_loop():
 def main():
     _log('MAIN', f"DONZO cloud launcher — port {PORT}")
     _session_bootstrap()
+    # Konteyner boshlangan vaqt — health report'ga: deploy/startup paytida
+    # komponentlar hali boshlanayotgan bo'ladi (polling-lock 10 daqiqagacha
+    # kutadi), bu davrda noto'g'ri 'o'lik' signali chiqmasligi uchun.
+    try:
+        import django
+        django.setup()
+        from apps.settings_app.models import Setting
+        Setting.set_setting('cloud_launcher_started_at',
+                            dt.datetime.now(dt.timezone.utc).isoformat())
+        _log('MAIN', 'boshlanish vaqti yozildi (health-report grace)')
+    except Exception as exc:
+        _log('MAIN', f"boshlanish vaqti yozilmadi: {type(exc).__name__}: {str(exc)[:120]}")
 
     procs = [
         ('DAPHNE', [sys.executable, '-m', 'daphne', '-b', '0.0.0.0',

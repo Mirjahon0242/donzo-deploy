@@ -781,6 +781,28 @@ def build_status_report() -> str:
     )
 
 
+def _container_started_recently(grace_seconds: int = 12 * 60) -> bool:
+    """Konteyner (cloud_launcher) hali ishga tushayotgan bo'lsa True.
+
+    Deploy/startup paytida bot polling-lock'ni kutadi (10 daqiqagacha),
+    user client ham endigina boshlanadi — shu davrda stats fayllari hali
+    yozilmagan bo'lishi mumkin. Bu davrda komponentni 'o'lik' deb ko'rsatish
+    NOTO'G'RI signal bo'ladi. Grace vaqt o'tgach ham stats bo'lmasa — bu
+    haqiqiy muammo va uni ko'rsatish kerak.
+    """
+    from datetime import datetime, timezone as _utc
+    try:
+        raw = Setting.get_setting('cloud_launcher_started_at', '')
+        if not raw:
+            return False
+        st = datetime.fromisoformat(raw)
+        if st.tzinfo is None:
+            st = st.replace(tzinfo=_utc.utc)
+        return (datetime.now(_utc.utc) - st).total_seconds() < grace_seconds
+    except Exception:
+        return False
+
+
 def build_health_report() -> str:
     """Periodic system health report for the report group (every 15 min).
 
@@ -789,6 +811,7 @@ def build_health_report() -> str:
     """
     import json
     import os
+    import time as _time
     from datetime import datetime, timezone as dt_timezone
     from pathlib import Path
     import urllib.request
@@ -805,6 +828,7 @@ def build_health_report() -> str:
 
     # 1) Bot
     bot_ok, bot_detail = False, 'stats topilmadi'
+    bot_starting = False
     try:
         stats = json.loads((root / '.freebuff' / 'bot-stats.json').read_text(encoding='utf-8'))
         hb = stats.get('last_heartbeat')
@@ -818,9 +842,34 @@ def build_health_report() -> str:
             bot_detail = 'ishlayapti' if fresh else 'heartbeat eskirgan'
             if not valid:
                 bot_detail = 'token yaroqsiz'
+        else:
+            bot_detail = "heartbeat yo'q"
     except Exception:
         pass
-    _check('Bot (@DONZOROBOT)', bot_ok, bot_detail)
+    if not bot_ok:
+        # Deploy/startup paytida bot hali stats faylini yozmagan bo'lishi
+        # mumkin (polling-lock 10 daqiqagacha kutadi) — bu noto'g'ri ❌ emas.
+        if _container_started_recently():
+            bot_starting = True
+        else:
+            # Fayl tizimidan mustaqil zaxira: bot_polling_lock har 30 soniyada
+            # yangilanadi (heartbeat loop) — yangi bo'lsa bot TIRIK.
+            try:
+                lock = Setting.get_setting('bot_polling_lock', '')
+                if lock:
+                    try:
+                        lt = float(lock)
+                        if _time.time() - lt < 90:
+                            bot_ok = True
+                            bot_detail = 'ishlayapti'
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
+    if bot_starting:
+        _check('Bot (@DONZOROBOT)', True, 'ishga tushmoqda…')
+    else:
+        _check('Bot (@DONZOROBOT)', bot_ok, bot_detail)
 
     # 2) Backend (daphne)
     # Cloud'da RENDER_EXTERNAL_URL / PORT env ishlatiladi; lokalda
@@ -871,6 +920,7 @@ def build_health_report() -> str:
 
     # 4) User Client (worker itself)
     uc_ok, uc_detail = False, 'stats topilmadi'
+    uc_starting = False
     try:
         stats = json.loads((root / '.freebuff' / 'user-client-stats.json').read_text(encoding='utf-8'))
         hb = stats.get('last_heartbeat')
@@ -882,10 +932,26 @@ def build_health_report() -> str:
             uc_ok = fresh
             uc_detail = 'ONLINE' if fresh else 'heartbeat eskirgan'
         else:
-            uc_detail = 'heartbeat yo\'q'
+            uc_detail = "heartbeat yo'q"
     except Exception:
         pass
-    _check('User Client', uc_ok, uc_detail)
+    if not uc_ok and _container_started_recently():
+        uc_starting = True
+    if uc_starting:
+        _check('User Client', True, 'ishga tushmoqda…')
+    elif not uc_ok:
+        # Sessiya umuman yo'q bo'lsa — worker kirishni kutmoqda, bu noto'g'ri
+        # 'o'lik' signali emas. Sessiya BOR-u worker ishlamasa — haqiqiy muammo.
+        try:
+            _sess = Setting.get_setting('user_client_session_b64', '') or ''
+            if not _sess:
+                _check('User Client', True, 'kirish kutilmoqda')
+            else:
+                _check('User Client', False, uc_detail)
+        except Exception:
+            _check('User Client', False, uc_detail)
+    else:
+        _check('User Client', True, uc_detail)
 
     # 5) Monitor chat
     s = get_settings()
