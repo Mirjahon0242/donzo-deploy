@@ -265,7 +265,7 @@ class StaffAiTests(TestCase):
         p = captured.get('prompt', '')
         self.assertIn('fikrlash', p)
         self.assertIn('ODIAMIYLIK', p)
-        self.assertIn('tahlil', p)
+        self.assertIn('tahlil', p.lower())
 
     # ── MAXSUS STSENARIYLAR ────────────────────────────────────────────────
     def _mk_user(self, username, role):
