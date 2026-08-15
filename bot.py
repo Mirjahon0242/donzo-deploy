@@ -1111,39 +1111,64 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
-async def _transcribe_voice(bot, file_id: str) -> str:
-    """Ovozli xabarni Gemini orqali matnga aylantiradi. Returns matn yoki ''."""
+# Audio'ni qo'llab-quvvatlaydigan ma'lum modellar — sozlangan model audio
+# inline data'ni qabul qilmasa (text-only) fallback sifatida ishlatiladi.
+_AUDIO_CAPABLE_MODELS = (
+    'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite',
+)
+
+
+async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> str:
+    """Ovozli xabarni Gemini orqali matnga aylantiradi. Returns matn yoki ''.
+
+    Sozlangan model audio inline data'ni qo'llab-quvvatlamasa (masalan
+    text-only model) — avtomatik audio-capable fallback modellarga o'tadi.
+    Hech qachon exception tashlamaydi (bot buzilmaydi).
+    """
     try:
         from apps.settings_app.models import Setting
         key = Setting.get_setting('gemini_api_key', '') or ''
-        model = Setting.get_setting('gemini_model', 'gemini-1.5-flash') or 'gemini-1.5-flash'
         if not key:
             return ''
+        configured = Setting.get_setting('gemini_model', 'gemini-1.5-flash') or 'gemini-1.5-flash'
+        models = [configured] + [m for m in _AUDIO_CAPABLE_MODELS if m != configured]
         import base64
         import io
         import urllib.request
         file = await bot.get_file(file_id)
-        # Telegram voice = OGG/Opus; download as bytes
         b = io.BytesIO()
         await file.download_to_memory(b)
         audio_b64 = base64.b64encode(b.getvalue()).decode('ascii')
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        body = {
-            'contents': [{'parts': [
-                {'inline_data': {'mime_type': 'audio/ogg', 'data': audio_b64}},
-                {'text': 'Bu ovozli xabarni matnga aylantir. Aytilgan gaplarni to\'liq yoz. '
-                         'Faqat transkripsiya — izoh, tarjima yoki qo\'shimcha yozma.'},
-            ]}],
-            'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 2048},
-        }
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}, method='POST',
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode('utf-8')
-        data = json.loads(raw)
-        return (data['candidates'][0]['content']['parts'][0]['text'] or '').strip()
+        last_err = None
+        for model in models:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                body = {
+                    'contents': [{'parts': [
+                        {'inline_data': {'mime_type': mime_type, 'data': audio_b64}},
+                        {'text': 'Bu ovozli xabarni matnga aylantir. Aytilgan gaplarni to\'liq yoz. '
+                                 'Faqat transkripsiya — izoh, tarjima yoki qo\'shimcha yozma.'},
+                    ]}],
+                    'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 2048},
+                }
+                req = urllib.request.Request(
+                    url, data=json.dumps(body).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'}, method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    raw = resp.read().decode('utf-8')
+                data = json.loads(raw)
+                text = (data['candidates'][0]['content']['parts'][0]['text'] or '').strip()
+                if text:
+                    return text
+            except Exception as exc:
+                last_err = exc
+                continue
+        if last_err:
+            logging.getLogger(__name__).warning(
+                'transcribe voice failed on all models: %s: %s',
+                type(last_err).__name__, str(last_err)[:150])
+        return ''
     except Exception as exc:
         logging.getLogger(__name__).warning('transcribe voice failed: %s: %s', type(exc).__name__, str(exc)[:150])
         return ''
@@ -1173,7 +1198,11 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    text = await _transcribe_voice(context.bot, voice.file_id)
+    # Telegram voice = OGG/Opus; audio (musiqa/fayl) = o'z mime yoki audio/mpeg
+    _mime = 'audio/ogg'
+    if msg.audio:
+        _mime = getattr(msg.audio, 'mime_type', '') or 'audio/mpeg'
+    text = await _transcribe_voice(context.bot, voice.file_id, _mime)
     if not text:
         try:
             await msg.reply_text("Kechirasiz, ovozli xabarni tushuna olmadim. Matn yozib yuboring.")
