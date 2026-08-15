@@ -1117,8 +1117,9 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # sinab ko'rilgan: eski modellar (1.5/2.0/2.5-flash) endi 404 qaytaradi —
 # shuning uchun faqat ListModels'da mavjud bo'lganlar yozilgan.
 _AUDIO_CAPABLE_MODELS = (
-    'gemini-3.5-flash',
     'gemini-3.6-flash',
+    'gemini-3.7-flash',
+    'gemini-3.5-flash',
     'gemini-3.5-flash-lite',
     'gemini-flash-lite-latest',
     'gemini-3-flash-preview',
@@ -1141,7 +1142,7 @@ async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> 
         key = (await sync_to_async(Setting.get_setting)('gemini_api_key', '') or '')
         if not key:
             return ''
-        configured = (await sync_to_async(Setting.get_setting)('gemini_model', 'gemini-3.1-flash-lite') or 'gemini-3.1-flash-lite')
+        configured = (await sync_to_async(Setting.get_setting)('gemini_model', 'gemini-3.6-flash') or 'gemini-3.6-flash')
         models = [configured] + [m for m in _AUDIO_CAPABLE_MODELS if m != configured]
         import base64
         import io
