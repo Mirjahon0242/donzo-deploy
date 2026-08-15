@@ -1134,11 +1134,14 @@ async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> 
     o'tish bor. Hech qachon exception tashlamaydi (bot buzilmaydi).
     """
     try:
+        # Django async kontekstida DB'ga sinxron kirish SynchronousOnlyOperation
+        # tashlaydi — Setting o'qishlar sync_to_async bilan o'ralgan bo'lishi shart.
+        from asgiref.sync import sync_to_async
         from apps.settings_app.models import Setting
-        key = Setting.get_setting('gemini_api_key', '') or ''
+        key = (await sync_to_async(Setting.get_setting)('gemini_api_key', '') or '')
         if not key:
             return ''
-        configured = Setting.get_setting('gemini_model', 'gemini-3.1-flash-lite') or 'gemini-3.1-flash-lite'
+        configured = (await sync_to_async(Setting.get_setting)('gemini_model', 'gemini-3.1-flash-lite') or 'gemini-3.1-flash-lite')
         models = [configured] + [m for m in _AUDIO_CAPABLE_MODELS if m != configured]
         import base64
         import io
