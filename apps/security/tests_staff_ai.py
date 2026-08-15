@@ -593,3 +593,39 @@ class StaffAiTests(TestCase):
             staff_ai.staff_chat('Salom!', 'mem4_user')
         self.assertIn('USER MEMORY', captured['prompt'])
         self.assertIn('karta limitlari', captured['prompt'])
+
+    # ── PROAKTIV XABAR (o'z hayoti bor odam, so'ralmagan holda yozadi) ────
+
+    def test_proactive_message_not_configured_returns_empty(self):
+        # AI sozlanmagan bo'lsa bo'sh qaytadi (bot hech narsa yubormaydi)
+        r = staff_ai.proactive_message('mem_user')
+        self.assertFalse(r['ok'])
+        self.assertEqual(r['answer'], '')
+
+    def test_proactive_message_prompt_has_own_life_persona(self):
+        # Proaktiv persona o'z hayoti bor odamdek — tizim so'zlari TAQIQLANADI
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'E, dangasa, bugun ham ish yig\'ilib qolganmi?'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            r = staff_ai.proactive_message('mem_user')
+        self.assertTrue(r['ok'])
+        self.assertIn('O\'Z HAYOTI BOR ODAM', captured['prompt'])
+        self.assertIn('TIZIMNI HECH QACHON ESGA OLMA', captured['prompt'])
+        self.assertIn('mem_user', captured['prompt'])
+        self.assertEqual(r['answer'], 'E, dangasa, bugun ham ish yig\'ilib qolganmi?')
+
+    def test_proactive_message_gemini_failure_returns_empty(self):
+        # Gemini xato bersa bo'sh qaytadi — bot buzilmaydi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': False, 'answer': 'xato'}):
+            r = staff_ai.proactive_message('mem_user')
+        self.assertFalse(r['ok'])
+        self.assertEqual(r['answer'], '')

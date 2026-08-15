@@ -217,6 +217,89 @@ def _price_sync_loop():
         time.sleep(PRICE_SYNC_CHECK_INTERVAL)
 
 
+def _send_proactive_message():
+    """Tasodifiy staff a'zosiga DONZO o'z-o'zidan jonli xabar yuboradi.
+
+    DONZO guruhda "yashaydi": vaqti-vaqti bilan staff a'zolarini belgilab,
+    hazil / muloyim tanqid / ustidan kulish bilan xabar yozadi — xuddi o'z
+    hayoti bor odamdek. Tizim holati/raqamlar xabarga ARALASHMAYDI (persona
+    taqiqlaydi). Hech qachon exception tashlamaydi — bot buzilmaydi.
+    """
+    try:
+        import json
+        import random
+        import urllib.request
+        from apps.settings_app.models import Setting
+        from apps.users.models import User
+
+        chat_id = Setting.get_setting('payment_report_chat_id', '') or ''
+        token = Setting.get_setting('telegram_bot_token', '') or ''
+        if not chat_id or not token:
+            return
+
+        staff = list(User.objects.filter(role__in=STAFF_ROLES, telegram_id__isnull=False)
+                     .exclude(telegram_id=''))
+        if not staff:
+            return
+
+        # Oxirgi 2 qabul qiluvchini takrorlamaymiz (zeriktirmaslik uchun)
+        try:
+            last = (Setting.get_setting('staff_ai_proactive_last', '') or '').split(',')
+            last = [x for x in last if x]
+        except Exception:
+            last = []
+        candidates = [u for u in staff if str(u.id) not in last]
+        if not candidates:
+            candidates = staff
+        target = random.choice(candidates)
+
+        from apps.security import staff_ai
+        res = staff_ai.proactive_message(target.username)
+        if not res.get('ok') or not res.get('answer'):
+            return
+
+        mention = (f"@{target.telegram_username}" if getattr(target, 'telegram_username', None)
+                   else target.username)
+        text = f"{mention}\n\n{res['answer']}"
+
+        payload = {'chat_id': chat_id, 'text': text, 'disable_web_page_preview': True}
+        req = urllib.request.Request(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            ok = bool(json.loads(resp.read().decode('utf-8')).get('ok'))
+        if ok:
+            Setting.set_setting('staff_ai_proactive_last', ','.join((last + [str(target.id)])[-2:]))
+            print(f"[AI] Proaktiv xabar yuborildi: @{target.username}", flush=True)
+    except Exception as exc:
+        print(f"[AI] Proaktiv xabar xatosi: {type(exc).__name__}", flush=True)
+
+
+def _proactive_loop():
+    """DONZO proaktiv suhbat loopi — staff guruhida o'zi "yashab" turadi.
+
+    Sozlamalar:
+      staff_ai_proactive_enabled   — 'true'/'false' (default true)
+      staff_ai_proactive_interval_min — daqiqada interval (default 45)
+    Xato hech narsani buzmaydi; loop abadiy ishlaydi.
+    """
+    time.sleep(90)  # bot ishga tushishini kutamiz (DB tayyor bo'lsin)
+    while True:
+        interval = 45 * 60
+        try:
+            from apps.settings_app.models import Setting
+            enabled = (Setting.get_setting('staff_ai_proactive_enabled', 'true') or 'true').lower() == 'true'
+            if enabled:
+                _send_proactive_message()
+            minutes = float(Setting.get_setting('staff_ai_proactive_interval_min', '45') or 45)
+            interval = max(5, int(minutes * 60))
+        except Exception:
+            interval = 45 * 60
+        time.sleep(interval)
+
+
 def _get_bot_config():
     """Read bot config from DB settings (admin panel → Kalitlar)."""
     token = Setting.get_setting('telegram_bot_token', '')
@@ -1235,6 +1318,11 @@ def main():
     # Fragment live-price sync (kuniga bir marta) — bot bilan parallel ishlaydi.
     threading.Thread(target=_price_sync_loop, daemon=True).start()
     print("[BOT] Fragment narx sinxronlash: har 24 soatda (bot orqali)")
+
+    # Proaktiv suhbat — DONZO staff guruhida o'zi "yashaydi": vaqti-vaqti
+    # staff a'zolarini belgilab, hazil/tanqid bilan xabar yozadi.
+    threading.Thread(target=_proactive_loop, daemon=True).start()
+    print("[BOT] Proaktiv suhbat: staff a'zolariga o'zi xabar yozadi")
 
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)
