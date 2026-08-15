@@ -57,6 +57,14 @@ CONV_TTL_SECONDS = 10 * 60
 # Gemini'ga yuboriladigan tarix uzunligi (oxirgi N xabar).
 CONV_HISTORY_MAX = 30  # xotira kengaytirildi: oxirgi 30 xabar (avval 15 edi)
 
+# ── UZOQ MUDDATLI XOTIRA (sessiyalar orasida ham eslab qolish) ────────────
+# Suhbat tarixi (staff_ai_conv_) 10 daqiqada o'chadi, lekin bu XOTIRA hech
+# qachon o'chmaydi: kim kimligi, nima so'ragani, xohishlari — sessiyalar
+# orasida ham saqlanadi va har javobda kontekstga qo'shiladi.
+MEMORY_KEY_PREFIX = 'staff_ai_memory_'
+MEMORY_MAX_NOTES = 40      # shu sondan oshsa Gemini bilan siqib profil qilinadi
+MEMORY_NOTE_CHARS = 140    # bitta eslatma maksimal uzunligi
+
 _PERSONA = """## SYSTEM PROMPT — SHAXSIY AI YORDAMCHI
 
 Sen yuqori darajadagi shaxsiy sun'iy intellekt yordamchisisan — egangning
@@ -714,6 +722,125 @@ def _conv_save(username: str, data: dict) -> None:
         logger.warning('conv save failed for %s', username)
 
 
+# ── UZOQ MUDDATLI XOTIRA — foydalanuvchi haqida doimiy faktlar ─────────────
+def _memory_load(username: str) -> list:
+    """Foydalanuvchining doimiy xotirasini o'qiydi (Setting'dan). Never raises."""
+    try:
+        from apps.settings_app.models import Setting
+        raw = Setting.get_setting(MEMORY_KEY_PREFIX + username, '')
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [str(x).strip()[:MEMORY_NOTE_CHARS * 3] for x in data if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _memory_save(username: str, notes: list) -> None:
+    """Foydalanuvchining doimiy xotirasini saqlaydi (cheklangan)."""
+    try:
+        from apps.settings_app.models import Setting
+        Setting.set_setting(MEMORY_KEY_PREFIX + username,
+                            json.dumps(notes[-MEMORY_MAX_NOTES:], ensure_ascii=False))
+    except Exception:
+        logger.warning('memory save failed for %s', username)
+
+
+def _memory_identity(username: str) -> str:
+    """Foydalanuvchi haqidagi doimiy ma'lumot: kim, qanday rol, qachondan."""
+    try:
+        from apps.users.models import User
+        u = User.objects.filter(username=username).first()
+        if not u:
+            return f"@{username} — tizimda topilmadi (staff guruhidan yozgan)"
+        role = getattr(u, 'role', '?') or '?'
+        first = (getattr(u, 'first_name', '') or '').strip()
+        last = (getattr(u, 'last_name', '') or '').strip()
+        name = f"{first} {last}".strip() or u.username
+        tg = (getattr(u, 'telegram_username', '') or '').strip()
+        created = u.created_at.strftime('%Y-%m-%d') if getattr(u, 'created_at', None) else '?'
+        base = f"@{username} — rol: {role}, ism: {name}, tizimda: {created} dan buyon"
+        if tg:
+            base += f", telegram: @{tg}"
+        if getattr(u, 'is_blacklisted', False):
+            base += ", qora ro'yxatda!"
+        return base
+    except Exception:
+        return f"@{username} — rol ma'lumoti o'qib bo'lmadi"
+
+
+def _memory_text(username: str) -> str:
+    """Doimiy xotirani Gemini prompt'iga tayyorlaydi."""
+    notes = _memory_load(username)
+    if not notes:
+        return "(bu foydalanuvchi haqida hali xotira yo'q — birinchi uzoq muloqot)"
+    return '\n'.join(f"• {n}" for n in notes[-MEMORY_MAX_NOTES:])
+
+
+# Foydalanuvchi xohish/xulq-atvorini bildiruvchi so'zlar — xotiraga alohida yoziladi.
+_MEMORY_PREF_WORDS = ('kinoya', 'hazil', 'qisqa javob', 'jarvis', 'odamiy',
+                      'balandparvoz', 'xotira', 'menga', 'meni', 'doim',
+                      'har doim', 'faqat', "qat'iy", 'tahrir', "o'zgartir")
+
+
+def _memory_update(username: str, q: str, answer: str = '') -> None:
+    """Har muloqotdan so'ng doimiy xotiraga fakt qo'shadi (bepul, deterministik).
+
+    1) Foydalanuvchi nima so'ragani → qisqa eslatma (sana bilan).
+    2) Xohish/xulq-atvor so'zlari ishlatilsa → alohida eslatma.
+    Eslatmalar MEMORY_MAX_NOTES dan oshsa — Gemini bilan birlashtirib,
+    shaxs profili qilib siqadi (har ~40 xabarda bir marta qo'shimcha so'rov).
+    Hech qachon exception tashlamaydi.
+    """
+    try:
+        notes = _memory_load(username)
+        today = timezone.now().strftime('%d.%m')
+        q_clean = ' '.join((q or '').split())[:MEMORY_NOTE_CHARS]
+        if q_clean:
+            notes.append(f"{today}: so'radi — {q_clean}")
+        ql = (q or '').lower()
+        found = [w for w in _MEMORY_PREF_WORDS if w in ql]
+        if found:
+            # Faqat oldingi XOHISH eslatmalariga solishtiramiz — 'so'radi'
+            # eslatmasi ham xohish so'zini o'z ichiga olishi mumkin.
+            pref_notes = [n for n in notes[:-1] if 'xohish' in n]
+            recent = ' '.join(pref_notes[-4:])
+            if not any(f in recent for f in found):
+                notes.append(f"{today}: xohish — {' '.join(found)}")
+        if len(notes) > MEMORY_MAX_NOTES:
+            notes = _memory_compact(username, notes)
+        _memory_save(username, notes)
+    except Exception:
+        logger.warning('memory update failed for %s', username)
+
+
+def _memory_compact(username: str, notes: list) -> list:
+    """Xotira ko'paysa Gemini bilan siqib, shaxs profili qilib birlashtiradi.
+
+    Gemini ishlamasa ham hech narsa yo'qolmaydi — eski eslatmalar oxirgi
+    MEMORY_MAX_NOTES - 15 tasigacha saqlanadi.
+    """
+    try:
+        profile = _memory_identity(username)
+        prompt = (
+            "Quyida foydalanuvchi haqidagi xotira eslatmalari bor. Ularni o'qib, "
+            "shu odam haqidagi ENG MUHIM doimiy faktlarni (ism, rol, xohishlar, "
+            "qiziqishlar, tez-tez so'raladigan narsalar) 6-10 qatorda siqib bering. "
+            "Sanalar va ahamiyatsiz tafsilotlarni tashlang. Faqat faktlar, sharhsiz.\n\n"
+            f"KIM: {profile}\n\nESLATMALAR:\n"
+            + '\n'.join(f"- {n}" for n in notes[-MEMORY_MAX_NOTES:])
+        )
+        res = _call_gemini(prompt)
+        if res.get('ok'):
+            compact = [l.strip('- • ').strip() for l in res['answer'].splitlines() if l.strip()]
+            if compact:
+                return compact[:MEMORY_MAX_NOTES]
+    except Exception:
+        logger.warning('memory compact failed for %s', username)
+    return notes[-(MEMORY_MAX_NOTES - 15):]
+
+
 def _run_scenario_action(scenario: str, data: dict, username: str) -> dict:
     """Stsenariyning yakuniy amalini bajaradi. Returns {'ok', 'answer'}.
 
@@ -1297,12 +1424,17 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                    'grandiose/self-assured flair, as if looking down on them, but never insulting')
             prompt = (
                 _GREETING_PERSONA
+                + "\n\n== USER IDENTITY (who they are) ==\n"
+                + _memory_identity(username)
+                + "\n\n== USER MEMORY (long-term, across sessions) ==\n"
+                + _memory_text(username)
                 + "\n\n== WHO IS ASKING ==\n"
                 + who
                 + "\n\n== USER SAID ==\n"
                 + q[:400]
             )
             result = _call_gemini(prompt)
+            _memory_update(username, q, result.get('answer', ''))
             if result.get('ok'):
                 return {'ok': True, 'answer': result['answer']}
             return {'ok': False, 'error': 'network_error', 'answer': result['answer']}
@@ -1334,6 +1466,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                 conv['scenario_data'] = handled.get('data') or sc_data
                 conv['step'] = 'scenario'
             _conv_save(username, conv)
+            _memory_update(username, q, handled.get('answer', ''))
             return {'ok': True, 'answer': handled['answer']}
 
         detected = _detect_scenario(q)
@@ -1350,6 +1483,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                 history = history[-CONV_HISTORY_MAX * 2:]
                 conv['history'] = history
                 _conv_save(username, conv)
+                _memory_update(username, q, immediate_res.get('answer', ''))
                 return {'ok': immediate_res.get('ok', True), 'answer': immediate_res.get('answer', 'Bajarildi.')}
             conv['scenario'] = detected
             conv['scenario_step'] = _SCENARIO_DEFS[detected]['steps'][0]
@@ -1361,6 +1495,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             history = history[-CONV_HISTORY_MAX * 2:]
             conv['history'] = history
             _conv_save(username, conv)
+            _memory_update(username, q)
             answer = (intro + "\n\n" if intro else '') + first_ask
             return {'ok': True, 'answer': answer}
 
@@ -1381,6 +1516,10 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             + f"step '{next_step}' — follow the flow guide for that next step."
             + "\n\n== CONVERSATION HISTORY (previous messages) ==\n"
             + _conv_history_text(history)
+            + "\n\n== USER IDENTITY (who they are) ==\n"
+            + _memory_identity(username)
+            + "\n\n== USER MEMORY (long-term, across sessions — what they asked before, preferences) ==\n"
+            + _memory_text(username)
             + "\n\n== WHO IS ASKING ==\n"
             + who
             + "\n\n== TODAY (what happened today on the platform) ==\n"
@@ -1401,6 +1540,7 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         conv['history'] = history
         conv['step'] = next_step
         _conv_save(username, conv)
+        _memory_update(username, q, result.get('answer', ''))
 
         if result.get('ok'):
             return {'ok': True, 'answer': result['answer']}

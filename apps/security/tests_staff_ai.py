@@ -526,3 +526,70 @@ class StaffAiTests(TestCase):
         from apps.users.models import User
         u = User.objects.get(username='im_cust3')
         self.assertEqual(float(u.balance), 0.0)
+
+    # ── UZOQ MUDDATLI XOTIRA (sessiyalar orasida eslab qolish) ────────────
+
+    def test_memory_save_load_roundtrip(self):
+        staff_ai._memory_save('mem_user', ['fakt 1', 'fakt 2'])
+        self.assertEqual(staff_ai._memory_load('mem_user'), ['fakt 1', 'fakt 2'])
+
+    def test_memory_update_records_question_and_preference(self):
+        # Har muloqotdan so'ng xotiraga "so'radi" eslatmasi yoziladi,
+        # xohish so'zlari (kinoya) alohida eslatma bo'ladi.
+        staff_ai._memory_update('mem_user', 'qandaysan, menga kinoya bilan javob ber')
+        notes = staff_ai._memory_load('mem_user')
+        self.assertTrue(any('so\'radi' in n for n in notes))
+        self.assertTrue(any('kinoya' in n for n in notes))
+
+    def test_memory_persists_across_sessions(self):
+        # Suhbat tarixi 10 daqiqada o'chadi, lekin UZOQ MUDDATLI xotira qoladi.
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('staff_ai_conv_mem2_user', '')
+        Setting.set_setting(staff_ai.MEMORY_KEY_PREFIX + 'mem2_user', '')
+        with unittest.mock.patch.object(
+                staff_ai, '_call_gemini',
+                return_value={'ok': True, 'answer': 'OK'}):
+            staff_ai.staff_chat('men paket narxlarini qanchaligini so\'rayman, qisqa javob ber', 'mem2_user')
+        # Suhbat o'chiriladi (TTL) — xotira esa qoladi
+        Setting.set_setting(staff_ai.CONV_KEY_PREFIX + 'mem2_user', '')
+        Setting.set_setting('staff_ai_conv_mem2_user', '')
+        notes = staff_ai._memory_load('mem2_user')
+        self.assertTrue(len(notes) >= 1)
+        self.assertTrue(any('paket' in n or 'so\'ra' in n for n in notes))
+        # Yangi sessiyadagi prompt xotirani o'z ichiga oladi
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'OK'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            staff_ai.staff_chat('yana savolim bor', 'mem2_user')
+        self.assertIn('USER MEMORY', captured['prompt'])
+        self.assertIn('paket', captured['prompt'])
+
+    def test_memory_compact_keeps_notes_when_gemini_down(self):
+        # Gemini ishlamasa ham xotira yo'qolmaydi — oxirgi eslatmalar qoladi.
+        notes = [f'eslatma {i}' for i in range(60)]
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': False, 'answer': 'xato'}):
+            compact = staff_ai._memory_compact('mem3_user', notes)
+        self.assertTrue(len(compact) > 0)
+        self.assertLessEqual(len(compact), staff_ai.MEMORY_MAX_NOTES - 15)
+
+    def test_greeting_prompt_includes_memory(self):
+        # Salomlashishda ham foydalanuvchi haqidagi xotira yuboriladi.
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        staff_ai._memory_save('mem4_user', ['karta limitlari haqida ko\'p so\'raydi'])
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'GEMINI'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            staff_ai.staff_chat('Salom!', 'mem4_user')
+        self.assertIn('USER MEMORY', captured['prompt'])
+        self.assertIn('karta limitlari', captured['prompt'])
