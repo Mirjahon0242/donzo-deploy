@@ -1111,10 +1111,17 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
-# Audio'ni qo'llab-quvvatlaydigan ma'lum modellar — sozlangan model audio
-# inline data'ni qabul qilmasa (text-only) fallback sifatida ishlatiladi.
+# Audio'ni qo'llab-quvvatlaydigan hozirda mavjud modellar — sozlangan model
+# audio inline data'ni qabul qilmasa (text-only) yoki vaqtincha xato bersa
+# (500/429/503) fallback sifatida ishlatiladi. Ro'yxat 2026-08 da jonli
+# sinab ko'rilgan: eski modellar (1.5/2.0/2.5-flash) endi 404 qaytaradi —
+# shuning uchun faqat ListModels'da mavjud bo'lganlar yozilgan.
 _AUDIO_CAPABLE_MODELS = (
-    'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite',
+    'gemini-3.5-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-flash-lite-latest',
+    'gemini-3-flash-preview',
 )
 
 
@@ -1123,17 +1130,20 @@ async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> 
 
     Sozlangan model audio inline data'ni qo'llab-quvvatlamasa (masalan
     text-only model) — avtomatik audio-capable fallback modellarga o'tadi.
-    Hech qachon exception tashlamaydi (bot buzilmaydi).
+    Vaqtinchalik xatolar (429/500/503) uchun qisqa retry + keyingi modelga
+    o'tish bor. Hech qachon exception tashlamaydi (bot buzilmaydi).
     """
     try:
         from apps.settings_app.models import Setting
         key = Setting.get_setting('gemini_api_key', '') or ''
         if not key:
             return ''
-        configured = Setting.get_setting('gemini_model', 'gemini-1.5-flash') or 'gemini-1.5-flash'
+        configured = Setting.get_setting('gemini_model', 'gemini-3.1-flash-lite') or 'gemini-3.1-flash-lite'
         models = [configured] + [m for m in _AUDIO_CAPABLE_MODELS if m != configured]
         import base64
         import io
+        import time as _time
+        import urllib.error
         import urllib.request
         file = await bot.get_file(file_id)
         b = io.BytesIO()
@@ -1141,36 +1151,47 @@ async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> 
         audio_b64 = base64.b64encode(b.getvalue()).decode('ascii')
         last_err = None
         for model in models:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {
-                    'contents': [{'parts': [
-                        {'inline_data': {'mime_type': mime_type, 'data': audio_b64}},
-                        {'text': 'Bu ovozli xabarni matnga aylantir. Aytilgan gaplarni to\'liq yoz. '
-                                 'Faqat transkripsiya — izoh, tarjima yoki qo\'shimcha yozma.'},
-                    ]}],
-                    'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 2048},
-                }
-                req = urllib.request.Request(
-                    url, data=json.dumps(body).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'}, method='POST',
-                )
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    raw = resp.read().decode('utf-8')
-                data = json.loads(raw)
-                text = (data['candidates'][0]['content']['parts'][0]['text'] or '').strip()
-                if text:
-                    return text
-            except Exception as exc:
-                last_err = exc
-                continue
+            for attempt in (1, 2):  # 429/500/503 uchun 1 marta qayta urinish
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                    body = {
+                        'contents': [{'parts': [
+                            {'inline_data': {'mime_type': mime_type, 'data': audio_b64}},
+                            {'text': 'Bu ovozli xabarni matnga aylantir. Aytilgan gaplarni to\'liq yoz. '
+                                     'Faqat transkripsiya — izoh, tarjima yoki qo\'shimcha yozma.'},
+                        ]}],
+                        'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 2048},
+                    }
+                    req = urllib.request.Request(
+                        url, data=json.dumps(body).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'}, method='POST',
+                    )
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        raw = resp.read().decode('utf-8')
+                    data = json.loads(raw)
+                    text = (data['candidates'][0]['content']['parts'][0]['text'] or '').strip()
+                    if text:
+                        return text
+                except urllib.error.HTTPError as exc:
+                    last_err = exc
+                    code = exc.code
+                    # 4xx (404/400/403/429...) — bu model bilan ishlamaydi,
+                    # keyingisiga o'tamiz; 429 bo'lsa qisqa kutib qayta urinamiz.
+                    if code in (429, 500, 502, 503, 504):
+                        if attempt == 1:
+                            _time.sleep(1.5)
+                            continue
+                    break
+                except Exception as exc:
+                    last_err = exc
+                    break
         if last_err:
             logging.getLogger(__name__).warning(
                 'transcribe voice failed on all models: %s: %s',
-                type(last_err).__name__, str(last_err)[:150])
+                type(last_err).__name__, str(last_err)[:200])
         return ''
     except Exception as exc:
-        logging.getLogger(__name__).warning('transcribe voice failed: %s: %s', type(exc).__name__, str(exc)[:150])
+        logging.getLogger(__name__).warning('transcribe voice failed: %s: %s', type(exc).__name__, str(exc)[:200])
         return ''
 
 
