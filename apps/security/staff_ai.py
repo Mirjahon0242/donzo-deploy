@@ -34,6 +34,7 @@ XAVFSIZLIK:
 import html
 import json
 import logging
+import random
 import re
 import time
 import urllib.request
@@ -140,6 +141,10 @@ topdim", kabi o'z iboralaring bor.
   verasan. "Buni ham tushuntirishim kerakmi?", "Yaxshi, yaxshi — qo'lingizdan
   kelganini qiling.", "Bu savolga javob berish uchun meni kamsitish kerak edi.",
   "Aql bu yerga kechikib kelganga o'xshaydi." kabi.
+* TAKRORIY SAVOL: xuddi shu savol qayta-qayta yozilsa yoki xabar to'xtovsiz
+  kelsa — boshidan javob berib o'tirma: BIR o'tkir, xijolat qoldiradigan gap
+  bilan javob qaytar ("Buni endigina aytdim, eshitmadingizmi?", "Xotirangiz
+  bilan ishlashni o'rganing." kabi) — odam omma oldida uyalib qolsin.
 * Balandparvozlik: o'ziga ishongan, vazmin, teatriy — "bilib qo'ying, men bu
   ishni uddalayman" degan ohang. Gapni "Tinchlaning.", "Bu mening ishim.",
   "Men buni bir soniyada hal qilaman." kabi boshlashing mumkin.
@@ -1575,6 +1580,64 @@ def proactive_message(target_username: str) -> dict:
         return {'ok': False, 'answer': ''}
 
 
+# ── TAKRORIY SAVOL / XABAR — BIR GAP BILAN XIJOLAT ─────────────────────
+# Xuddi shu savol qayta-qayta yozilsa yoki xabar to'xtovsiz kelsa — AI boshidan
+# javob berib o'tirmaydi: BIR o'tkir, xijolat qoldiradigan gap bilan javob
+# qaytaradi. Bu odamni omma oldida uyalttirish uchun yetarli bo'ladi.
+_REPEAT_SHAME_LINES = (
+    "Shu savolni endigina yozdingiz, xuddi shu gapni takrorlashdan nima topdingiz? Eshitish qobiliyatingizga shubha qila boshladim.",
+    "Buni bir necha daqiqa oldin aytdim. Yozishdan oldin o'qishni ham o'rganing, iltimos.",
+    "Xuddi shu savolni qayta yozdingiz. Yoki men eshitmayapman, yoki sizda qisqa muddatli xotira yo'q — qaysi biri to'g'riroq?",
+    "Takrorlash — o'rganish usuli, lekin sizda bu allaqachon kasallikka aylangan.",
+    "Agar javobni birinchi marta o'qiganingizda tushunganingizda, bu suhbatni ikkinchi marta boshlamas edik.",
+    "Yana shu savolmi? Siz xotirani qayta yuklash tugmasini topa olmayapsiz shekilli.",
+    "Men bir xil gapni ikki marta aytmayman. Siz ham bir xil savolni ikki marta yozmasligingizni maslahat beraman.",
+    "Bu savol hali ham ochiqmi? Yo'q — men javob berdim, siz shunchaki o'qishni xohlamadingiz.",
+    "Xuddi shu so'zlar bilan yana savol. Kechirasiz, xotirangiz bilan ishlayotgan bo'lsangiz, qayta yozishdan ko'ra qayta o'qish foydaliroq.",
+    "Takroriy savolga takroriy javob bermayman — bitta javob yetarli edi, qolganini o'zingiz hal qiling.",
+)
+
+
+def _normalize_question(q: str) -> str:
+    """Savolni taqqoslash uchun normalizatsiya qiladi — kichik harf, tinishsiz."""
+    try:
+        import unicodedata
+        s = unicodedata.normalize('NFKD', q or '')
+        s = re.sub(r'[^a-zа-яё0-9 ]', '', s.lower())
+        return re.sub(r'\s+', ' ', s).strip()
+    except Exception:
+        return (q or '').lower().strip()
+
+
+def _detect_repeat(history: list, q: str) -> bool:
+    """Xuddi shu savol oxirgi 6 xabarda allaqachon so'ralganmi?
+
+    Faqat STAFF xabarlari (user role) taqqoslanadi — AI javoblari emas.
+    So'zma-so'z takrorlash yoki shu qadar yaqin variant bo'lsa True qaytaradi.
+    """
+    try:
+        norm = _normalize_question(q)
+        if not norm or len(norm) < 3:
+            return False
+        user_msgs = [str(i.get('text', '')) for i in history if i.get('role') == 'user']
+        for prev in user_msgs[-6:]:
+            prev_norm = _normalize_question(prev)
+            if not prev_norm:
+                continue
+            if prev_norm == norm:
+                return True
+            # 90%+ o'xshashlik ham takrorlash hisoblanadi
+            try:
+                from difflib import SequenceMatcher
+                if SequenceMatcher(None, prev_norm, norm).ratio() >= 0.9:
+                    return True
+            except Exception:
+                pass
+        return False
+    except Exception:
+        return False
+
+
 def staff_chat(question: str, username: str = 'staff') -> dict:
     """Staff savoliga DONZO (shaxsiy AI yordamchi) persona + belgilangan suhbat oqimi bilan javob.
 
@@ -1700,6 +1763,20 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
             _conv_save(username, conv)
             _memory_update(username, q)
             answer = (intro + "\n\n" if intro else '') + first_ask
+            return {'ok': True, 'answer': answer}
+
+        # ── TAKRORIY SAVOL — BIR GAP BILAN XIJOLAT ──
+        # Xuddi shu savol qayta-qayta yozilsa yoki xabar to'xtovsiz kelsa —
+        # boshidan javob berib o'tirmay, BIR o'tkir gap aytamiz (odam omma
+        # oldida uyalib qoladi). EGAGA (ser) bu qoida YO'Q — unga doim to'liq javob.
+        if not _is_owner(username) and _detect_repeat(history, q):
+            answer = random.choice(_REPEAT_SHAME_LINES)
+            history.append({'role': 'user', 'text': q[:400]})
+            history.append({'role': 'assistant', 'text': answer[:400]})
+            history = history[-CONV_HISTORY_MAX * 2:]
+            conv['history'] = history
+            _conv_save(username, conv)
+            _memory_update(username, q, answer)
             return {'ok': True, 'answer': answer}
 
         next_step = _conv_advance(step, q)

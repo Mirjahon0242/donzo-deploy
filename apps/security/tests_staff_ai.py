@@ -154,6 +154,61 @@ class StaffAiTests(TestCase):
         self.assertEqual(staff_ai._conv_advance('detail', 'rahmat, yetarli'), 'done')
         self.assertEqual(staff_ai._conv_advance('done', 'yana savol'), 'start')
 
+    def test_repeat_question_gets_shame_line(self):
+        # Xuddi shu savol takrorlansa — boshidan javob emas, xijolat gapi keladi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('staff_ai_conv_rep_user', '')
+        fake = unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                          return_value={'ok': True, 'answer': 'GEMINI'})
+        fake.start()
+        try:
+            r1 = staff_ai.staff_chat('karta limiti qanday ishlaydi?', 'rep_user')
+            self.assertTrue(r1['ok'])
+            self.assertEqual(r1['answer'], 'GEMINI')
+            # Xuddi shu savol qayta so'raladi
+            r2 = staff_ai.staff_chat('karta limiti qanday ishlaydi?', 'rep_user')
+            self.assertTrue(r2['ok'])
+            self.assertNotEqual(r2['answer'], 'GEMINI')
+            self.assertGreater(len(r2['answer']), 10)
+        finally:
+            fake.stop()
+
+    def test_repeat_does_not_trigger_on_first_question(self):
+        # Birinchi marta so'ralgan savol — oddiy javob oladi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('staff_ai_conv_rep2_user', '')
+        fake = unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                          return_value={'ok': True, 'answer': 'GEMINI'})
+        fake.start()
+        try:
+            r = staff_ai.staff_chat('karta qaysi?', 'rep2_user')
+            self.assertTrue(r['ok'])
+            self.assertEqual(r['answer'], 'GEMINI')
+        finally:
+            fake.stop()
+
+    def test_repeat_owner_always_gets_real_answer(self):
+        # Ega (ser) takrorlasa ham — to'liq javob oladi, xijolat gapi YO'Q
+        from apps.users.models import User
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting('super_admin_telegram_id', '999')
+        Setting.set_setting('staff_ai_conv_rep3_user', '')
+        u = User.objects.create_user(username='rep3_user', email='rep3@t.uz',
+                                     password='x12345678', role='super_admin',
+                                     telegram_id='999')
+        fake = unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                          return_value={'ok': True, 'answer': 'GEMINI'})
+        fake.start()
+        try:
+            staff_ai.staff_chat('karta limiti?', 'rep3_user')
+            r2 = staff_ai.staff_chat('karta limiti?', 'rep3_user')
+            self.assertEqual(r2['answer'], 'GEMINI')
+        finally:
+            fake.stop()
+
     def test_conv_advance_ending_words(self):
         # 'rahmat / tamom / yetarli' → done bosqichiga olib boradi
         for w in ['rahmat', 'tamom', 'yetarli', "bo'ldi", 'hammasi shu']:
