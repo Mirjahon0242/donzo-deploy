@@ -1585,6 +1585,9 @@ def proactive_message(target_username: str) -> dict:
 # javob berib o'tirmaydi: BIR o'tkir, xijolat qoldiradigan gap bilan javob
 # qaytaradi. Bu odamni omma oldida uyalttirish uchun yetarli bo'ladi.
 _REPEAT_SHAME_LINES = (
+    "Egangnikini yala. Shu savolga o'zingiz to'ydingizmi?",
+    "Egangnikini yalaganingizcha, bu savolni qayta yozishdan to'ymadingizmi?",
+    "Shu savolni qayta-qayta yozishdan o'zingiz to'ymadingizmi? Egangnikini yalab, boshqa ish toping.",
     "Shu savolni endigina yozdingiz, xuddi shu gapni takrorlashdan nima topdingiz? Eshitish qobiliyatingizga shubha qila boshladim.",
     "Buni bir necha daqiqa oldin aytdim. Yozishdan oldin o'qishni ham o'rganing, iltimos.",
     "Xuddi shu savolni qayta yozdingiz. Yoki men eshitmayapman, yoki sizda qisqa muddatli xotira yo'q — qaysi biri to'g'riroq?",
