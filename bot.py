@@ -242,19 +242,37 @@ def _send_proactive_message():
         if not staff:
             return
 
-        # Oxirgi 2 qabul qiluvchini takrorlamaymiz (zeriktirmaslik uchun)
+        # MAQSADLI TARGET: staff_ai_proactive_target sozlansa (masalan 'mira')
+        # — loop doim O'SHA ODAMGA yozadi va uni kinoya bilan masxara qiladi.
+        mock = False
         try:
-            last = (Setting.get_setting('staff_ai_proactive_last', '') or '').split(',')
-            last = [x for x in last if x]
+            fixed_target = (Setting.get_setting('staff_ai_proactive_target', '') or '').strip()
         except Exception:
-            last = []
-        candidates = [u for u in staff if str(u.id) not in last]
-        if not candidates:
-            candidates = staff
-        target = random.choice(candidates)
+            fixed_target = ''
+        if fixed_target:
+            target = None
+            for u in staff:
+                if (u.username or '').lower() == fixed_target.lower() \
+                        or (getattr(u, 'telegram_username', '') or '').lower() == fixed_target.lower():
+                    target = u
+                    break
+            if target is None:
+                return  # target topilmasa — xabar yubormaymiz
+            mock = True
+        else:
+            # Oxirgi 2 qabul qiluvchini takrorlamaymiz (zeriktirmaslik uchun)
+            try:
+                last = (Setting.get_setting('staff_ai_proactive_last', '') or '').split(',')
+                last = [x for x in last if x]
+            except Exception:
+                last = []
+            candidates = [u for u in staff if str(u.id) not in last]
+            if not candidates:
+                candidates = staff
+            target = random.choice(candidates)
 
         from apps.security import staff_ai
-        res = staff_ai.proactive_message(target.username)
+        res = staff_ai.proactive_message(target.username, mock=mock)
         if not res.get('ok') or not res.get('answer'):
             return
 

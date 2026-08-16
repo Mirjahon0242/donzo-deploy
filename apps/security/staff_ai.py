@@ -1518,6 +1518,29 @@ def _handle_send_user_message(q: str, username: str) -> dict or None:
         return None
 
 
+_MOCK_PERSONA = """## SYSTEM PROMPT — KINOYALI MASXARA (proaktiv, @mira uchun)
+
+Sen DONZO — staff guruhining o'tkir tilli, hazilkash a'zosi. Bu xabar
+aynan BIR ODAMGA — pastdagi KIMGA YO'LLANADI blokidagi odamga yo'llanadi.
+
+VAZIFA: o'sha odamning USTIDAN KULISH va har xil kinoyali gaplar aytish.
+Bu — do'stona emas, shafqatsiz kinoya: o'zini baland tutadigan, uni pastga
+uradigan, kulgili va o'tkir. O'sha odam o'qisa, kulib ham, uyalib ham qolsin.
+
+USLUB:
+* 1-3 qisqa gap, jonli so'zlashuvcha o'zbek tili.
+* KINOYALI GAPLAR: "Buni ham sizmi qildingiz? Ha, kutilmagan — men sizdan
+  ko'proq kutgandim.", "Sizning harakatingizni ko'rib, xafa bo'ldim — hazil
+  qilyapman, qo'rqmang.", "Bugun ham o'zingizcha ishlayapsizmi? Barakalla,
+  hech bo'lmaganda urinyapsiz." kabi o'tkir, zaharxanda, kulgili.
+* ISMI YOKI @USERNAME BILAN murojaat qil — xabar aniq o'sha odamga.
+* TIZIMNI HECH QACHON ESGA OLMA: raqamlar, holat, buyurtmalar, xatolar —
+  YO'Q. Faqat o'sha odamning ustidan kulish.
+* HAR XABAR YANGI — avvalgisini takrorlama, har safar yangi kinoya top.
+* Emoji kam — so'z bilan jonli bo'l.
+"""
+
+
 _PROACTIVE_PERSONA = """## SYSTEM PROMPT — O'Z HAYOTI BOR ODAM (proaktiv xabar)
 
 Sen DONZO — staff guruhining jonli a'zosi. Sen oddiy xizmat boti emassan:
@@ -1552,18 +1575,21 @@ QANDAY YOZASAN:
 """
 
 
-def proactive_message(target_username: str) -> dict:
+def proactive_message(target_username: str, mock: bool = False) -> dict:
     """Staff a'zosiga o'z-o'zidan (so'ralmagan holda) yuboriladigan jonli xabar.
 
     O'z hayoti bor odamdek yozadi: hazil, muloyim tanqid, ustidan kulish.
+    mock=True bo'lsa — aynan o'sha odamning USTIDAN KULADIGAN, kinoyali
+    masxara xabari (o'tkir, zaharxanda, kulgili — tahdidsiz).
     PLATFORMANI hech qachon esga olmaydi (persona buni taqiqlaydi).
     Xato bo'lsa {'ok': False} — bot hech qachon yiqilmaydi.
     """
     try:
         if not is_enabled():
             return {'ok': False, 'answer': ''}
+        persona = _MOCK_PERSONA if mock else _PROACTIVE_PERSONA
         prompt = (
-            _PROACTIVE_PERSONA
+            persona
             + "\n\n== KIMGA YO'LLANADI ==\n"
             + _memory_identity(target_username)
             + "\n\n== BU ODAM HAQIDA XOTIRA (takrorlamaslik uchun) ==\n"
