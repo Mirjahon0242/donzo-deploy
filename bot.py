@@ -1143,7 +1143,13 @@ async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> 
         if not key:
             return ''
         configured = (await sync_to_async(Setting.get_setting)('gemini_model', 'gemini-3.6-flash') or 'gemini-3.6-flash')
-        models = [configured] + [m for m in _AUDIO_CAPABLE_MODELS if m != configured]
+        # Umumiy quota-cooldown bilan ishlaydi — staff chat bitta modelni
+        # charchatgan bo'lsa, ovoz ham o'sha modelga urilib 429 olmaydi.
+        try:
+            from apps.security.gemini_client import _model_order, _mark_quota
+            models = _model_order(configured)
+        except Exception:
+            models = [configured] + [m for m in _AUDIO_CAPABLE_MODELS if m != configured]
         import base64
         import io
         import time as _time
@@ -1180,8 +1186,15 @@ async def _transcribe_voice(bot, file_id: str, mime_type: str = 'audio/ogg') -> 
                     last_err = exc
                     code = exc.code
                     # 4xx (404/400/403/429...) — bu model bilan ishlamaydi,
-                    # keyingisiga o'tamiz; 429 bo'lsa qisqa kutib qayta urinamiz.
-                    if code in (429, 500, 502, 503, 504):
+                    # keyingisiga o'tamiz; 429 bo'lsa modelni cooldown'ga tashlab
+                    # keyingisiga o'tamiz (har modelning o'z limiti bor).
+                    if code == 429:
+                        try:
+                            _mark_quota(model)
+                        except Exception:
+                            pass
+                        break
+                    if code in (500, 502, 503, 504):
                         if attempt == 1:
                             _time.sleep(1.5)
                             continue

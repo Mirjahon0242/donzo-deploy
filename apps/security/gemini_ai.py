@@ -172,7 +172,6 @@ def analyze(payload: dict) -> dict:
     except Exception as exc:
         logger.warning('Gemini call failed: %s', type(exc).__name__)
         return {'ok': False, 'error': 'network_error'}
-
     try:
         result = json.loads(raw)
         text = result['candidates'][0]['content']['parts'][0]['text']
@@ -197,23 +196,12 @@ def _raw_chat(prompt: str) -> dict:
     if not s['gemini_api_key'] or not s['ai_enabled']:
         return {'ok': False, 'answer': 'AI sozlanmagan (gemini_api_key / security_ai_enabled)'}
 
-    body = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'temperature': 0.2, 'maxOutputTokens': 1024},
-    }
-    url = GEMINI_URL.format(model=s['gemini_model'])
-    req = urllib.request.Request(
-        f"{url}?key={s['gemini_api_key']}",
-        data=json.dumps(body).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-            raw = resp.read().decode('utf-8')
-        result = json.loads(raw)
-        text = result['candidates'][0]['content']['parts'][0]['text']
-        return {'ok': True, 'answer': text[:1500]}
+        from .gemini_client import chat as _gemini_chat
+        res = _gemini_chat(prompt, configured_model=s.get('gemini_model'), temperature=0.2, max_tokens=1024)
+        if res['ok']:
+            return {'ok': True, 'answer': res['answer'][:1500]}
+        return {'ok': False, 'answer': res.get('answer', 'AI mavjud emas')}
     except Exception as exc:
         logger.warning('Copilot call failed: %s', type(exc).__name__)
         return {'ok': False, 'answer': f'AI mavjud emas ({type(exc).__name__})'}

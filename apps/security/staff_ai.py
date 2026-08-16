@@ -1352,28 +1352,20 @@ def _live_context() -> str:
 
 
 def _call_gemini(prompt: str) -> dict:
-    """Gemini'ga bepul matn so'rov. Returns {'ok', 'answer'}. Never raises."""
-    s = _get_settings()
-    body = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 1024},
-    }
-    url = GEMINI_URL.format(model=s['gemini_model'])
-    req = urllib.request.Request(
-        f"{url}?key={s['gemini_api_key']}",
-        data=json.dumps(body).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
+    """Gemini'ga bepul matn so'rov — model rotatsiyasi bilan (429 quota himoyasi).
+
+    Bitta model limiti tugasa keyingisiga o'tadi. Returns {'ok', 'answer'}. Never raises.
+    """
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-            raw = resp.read().decode('utf-8')
-        result = json.loads(raw)
-        text = result['candidates'][0]['content']['parts'][0]['text']
-        return {'ok': True, 'answer': (text or '').strip()[:MAX_ANSWER]}
+        s = _get_settings()
+        from .gemini_client import chat as _gemini_chat
+        res = _gemini_chat(prompt, configured_model=s.get('gemini_model'), temperature=0.4, max_tokens=1024)
+        if res['ok']:
+            return {'ok': True, 'answer': (res['answer'] or '').strip()[:MAX_ANSWER]}
+        return {'ok': False, 'answer': res.get('answer', 'AI hozircha javob bera olmadi.')}
     except Exception as exc:
         logger.warning('Staff AI call failed: %s', type(exc).__name__)
-        return {'ok': False, 'answer': f"AI hozircha javob bera olmadi ({type(exc).__name__}). /status yoki /tahlil bilan tekshiring."}
+        return {'ok': False, 'answer': f"AI hozircha javob bera olmadi ({type(exc).__name__}). Bir ozdan so'ng qayta urinib ko'ring."}
 
 
 def _is_owner(username: str) -> bool:
