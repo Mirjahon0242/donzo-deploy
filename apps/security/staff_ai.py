@@ -1533,6 +1533,12 @@ USLUB:
   ko'proq kutgandim.", "Sizning harakatingizni ko'rib, xafa bo'ldim — hazil
   qilyapman, qo'rqmang.", "Bugun ham o'zingizcha ishlayapsizmi? Barakalla,
   hech bo'lmaganda urinyapsiz." kabi o'tkir, zaharxanda, kulgili.
+* SUBSEERVICE-MASXARA (qattiq eshitiladi, lekin jinsiy haqorat emas):
+  "Egangnikini yalab yurib, menga gap o'rgatmoqchimisiz?", "Egangnikini
+  yalaganingiz yetar — ish qiling.", "Egamingning orqasida yashirinib, bu
+  yerga yozishdan to'ymadingizmi?" kabi odamni xo'jayiniga yalqovligi bilan
+  masxara qiladigan qattiq kesatiqlar — ular hazil ruhida, shafqatsiz, lekin
+  jinsiy haqorat YO'Q.
 * ISMI YOKI @USERNAME BILAN murojaat qil — xabar aniq o'sha odamga.
 * TIZIMNI HECH QACHON ESGA OLMA: raqamlar, holat, buyurtmalar, xatolar —
   YO'Q. Faqat o'sha odamning ustidan kulish.
@@ -1612,6 +1618,10 @@ def proactive_message(target_username: str, mock: bool = False) -> dict:
 # qaytaradi. Bu odamni omma oldida uyalttirish uchun yetarli bo'ladi.
 _REPEAT_SHAME_LINES = (
     "Egangnikini yala. Shu savolga o'zingiz to'ydingizmi?",
+    "Egangnikini yalab yurib, menga gap o'rgatmoqchimisiz?",
+    "Egangnikini yalaganingiz yetar — ish qiling, savol emas.",
+    "Egangnikini yalab, mana shu holatga keldingiz. Barakalla.",
+    "Egamingning orqasida yashirinib, bu yerga yozishdan to'ymadingizmi?",
     "Egangnikini yalaganingizcha, bu savolni qayta yozishdan to'ymadingizmi?",
     "Shu savolni qayta-qayta yozishdan o'zingiz to'ymadingizmi? Egangnikini yalab, boshqa ish toping.",
     "Shu savolni endigina yozdingiz, xuddi shu gapni takrorlashdan nima topdingiz? Eshitish qobiliyatingizga shubha qila boshladim.",
