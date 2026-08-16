@@ -7,4 +7,5 @@ urlpatterns = [
     path('bot-status/', views.BotStatusView.as_view(), name='admin-bot-status'),
     path('fragment-status/', views.FragmentStatusView.as_view(), name='admin-fragment-status'),
     path('fragment-sync/', views.FragmentPriceSyncView.as_view(), name='admin-fragment-sync'),
+    path('marketing-stats/', views.MarketingStatsView.as_view(), name='admin-marketing-stats'),
 ]

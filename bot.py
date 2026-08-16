@@ -1198,12 +1198,22 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
     if not answer:
         return
     # Reklama qo'shish (marketing_ad_prob ehtimol bilan)
+    sent_ad = False
     if random.random() < ad_prob:
         ad = await sync_to_async(_marketing_ad)()
         if ad:
             answer = answer.rstrip() + '\n\n' + ad
+            sent_ad = True
     try:
         await msg.reply_html(staff_ai.escape_html(answer))
+    except Exception:
+        pass
+    # Statistika: guruhda nechta javob / reklama yuborildi (hech qachon buzmaydi)
+    try:
+        from apps.settings_app.models import MarketingGroupStat
+        await sync_to_async(MarketingGroupStat.record)(chat_id, chat_title, 'reply')
+        if sent_ad:
+            await sync_to_async(MarketingGroupStat.record)(chat_id, chat_title, 'ad')
     except Exception:
         pass
 
@@ -1232,6 +1242,13 @@ async def chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "suhbatga qo'shilaman!\n\n" + ad
         )
         await context.bot.send_message(mc.chat.id, welcome, disable_web_page_preview=True)
+        # Statistika: guruhga qo'shilish
+        try:
+            from apps.settings_app.models import MarketingGroupStat
+            await sync_to_async(MarketingGroupStat.record)(
+                str(mc.chat.id), getattr(mc.chat, 'title', '') or '', 'join')
+        except Exception:
+            pass
     except Exception:
         pass
 

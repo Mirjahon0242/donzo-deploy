@@ -337,3 +337,81 @@ class SiteSetting:
         for key, value in data.items():
             if key in cls.DEFAULTS:
                 Setting.set_setting(key, value)
+
+
+class MarketingGroupStat(models.Model):
+    """Marketing rejimi ishlagan har bir guruh bo'yicha yig'ma statistika.
+
+    Bot guruhda qiziqarli xabarga javob berganida, reklama yuborganida va
+    guruhga yangi qo'shilganida hisoblagichlar oshiriladi — admin panel
+    "Marketing" bo'limida jonli ko'rinadi.
+    """
+    chat_id = models.CharField(max_length=64, unique=True)
+    chat_title = models.CharField(max_length=255, blank=True, default='')
+    replies_count = models.PositiveIntegerField(default=0)
+    ads_count = models.PositiveIntegerField(default=0)
+    joins_count = models.PositiveIntegerField(default=0)
+    last_reply_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'marketing_group_stats'
+        verbose_name = 'Marketing group stat'
+        verbose_name_plural = 'Marketing group stats'
+
+    @classmethod
+    def record(cls, chat_id: str, chat_title: str = '', event: str = 'reply'):
+        """Atomik hisoblagich oshirish — race xavfsiz (F() + update_or_create).
+
+        event: 'reply' | 'ad' | 'join'
+        Hech qachon xato tashlamaydi (bot oqimini buzmaslik uchun).
+        """
+        from django.db.models import F
+        from django.utils import timezone
+        try:
+            row, _ = cls.objects.get_or_create(
+                chat_id=str(chat_id),
+                defaults={'chat_title': (chat_title or '')[:255]},
+            )
+            updates = {}
+            if event == 'reply':
+                updates['replies_count'] = F('replies_count') + 1
+                updates['last_reply_at'] = timezone.now()
+            elif event == 'ad':
+                updates['ads_count'] = F('ads_count') + 1
+            elif event == 'join':
+                updates['joins_count'] = F('joins_count') + 1
+            if (chat_title or '').strip():
+                updates['chat_title'] = (chat_title or '')[:255]
+            if updates:
+                cls.objects.filter(pk=row.pk).update(**updates)
+            MarketingDailyStat.record(event)
+        except Exception:
+            logger.exception('MarketingGroupStat.record failed')
+
+
+class MarketingDailyStat(models.Model):
+    """Kunlik marketing faolligi (14 kunlik grafik uchun)."""
+    day = models.DateField(unique=True)
+    replies_count = models.PositiveIntegerField(default=0)
+    ads_count = models.PositiveIntegerField(default=0)
+    joins_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = 'marketing_daily_stats'
+        verbose_name = 'Marketing daily stat'
+        verbose_name_plural = 'Marketing daily stats'
+
+    @classmethod
+    def record(cls, event: str):
+        from django.db.models import F
+        from django.utils import timezone
+        try:
+            day = timezone.localdate()
+            row, _ = cls.objects.get_or_create(day=day)
+            field = {'reply': 'replies_count', 'ad': 'ads_count', 'join': 'joins_count'}.get(event)
+            if field:
+                cls.objects.filter(pk=row.pk).update(**{field: F(field) + 1})
+        except Exception:
+            logger.exception('MarketingDailyStat.record failed')

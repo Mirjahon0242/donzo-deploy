@@ -249,6 +249,66 @@ class FragmentPriceSyncView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class MarketingStatsView(APIView):
+    """
+    GET /api/v1/admin/marketing-stats/
+
+    Marketing rejimining guruhlar bo'yicha statistikasi:
+      • groups — har guruh: chat_id, chat_title, replies_count, ads_count,
+        joins_count, last_reply_at (faollik bo'yicha kamayish tartibida)
+      • totals — jami guruhlar / javoblar / reklamalar / qo'shilishlar
+      • daily — oxirgi 14 kunlik kunlik faollik (grafik uchun)
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        from datetime import timedelta
+
+        from .models import MarketingDailyStat, MarketingGroupStat
+
+        groups = list(
+            MarketingGroupStat.objects.all().order_by('-replies_count', '-updated_at')[:200]
+        )
+        groups_data = [{
+            'chat_id': g.chat_id,
+            'chat_title': g.chat_title or f'Guruh {g.chat_id}',
+            'replies_count': g.replies_count,
+            'ads_count': g.ads_count,
+            'joins_count': g.joins_count,
+            'last_reply_at': g.last_reply_at.isoformat() if g.last_reply_at else None,
+        } for g in groups]
+
+        totals = {
+            'groups': len(groups_data),
+            'replies': sum(g['replies_count'] for g in groups_data),
+            'ads': sum(g['ads_count'] for g in groups_data),
+            'joins': sum(g['joins_count'] for g in groups_data),
+        }
+
+        # Oxirgi 14 kun — bo'sh kunlar ham 0 bilan to'ldiriladi (grafik to'liq)
+        today = timezone.localdate()
+        daily_map = {
+            d.day: d for d in MarketingDailyStat.objects.filter(day__gte=today - timedelta(days=13))
+        }
+        daily = []
+        for i in range(13, -1, -1):
+            day = today - timedelta(days=i)
+            d = daily_map.get(day)
+            daily.append({
+                'day': day.isoformat(),
+                'replies_count': d.replies_count if d else 0,
+                'ads_count': d.ads_count if d else 0,
+                'joins_count': d.joins_count if d else 0,
+            })
+
+        return Response({
+            'groups': groups_data,
+            'totals': totals,
+            'daily': daily,
+            'server_now': timezone.now().isoformat(),
+        })
+
+
 class WriteEnvFileView(APIView):
     """Write selected server settings from DB into the .env file.
 
