@@ -242,22 +242,24 @@ def _send_proactive_message():
         if not staff:
             return
 
-        # MAQSADLI TARGET: staff_ai_proactive_target sozlansa (masalan 'mira')
-        # — loop doim O'SHA ODAMGA yozadi va uni kinoya bilan masxara qiladi.
+        # MAQSADLI TARGET: staff_ai_proactive_target sozlansa (masalan 'mira'
+        # yoki 'akmalkhon007,ant1') — loop doim SHU ODAMLARGA yozadi va ularni
+        # kinoya bilan masxara qiladi. Vergul bilan bir nechta target beriladi,
+        # har safar ulardan biri tasodifiy tanlanadi.
         mock = False
         try:
-            fixed_target = (Setting.get_setting('staff_ai_proactive_target', '') or '').strip()
+            fixed_targets = [x.strip().lstrip('@').lower() for x in
+                             (Setting.get_setting('staff_ai_proactive_target', '') or '').split(',')]
+            fixed_targets = [x for x in fixed_targets if x]
         except Exception:
-            fixed_target = ''
-        if fixed_target:
-            target = None
-            for u in staff:
-                if (u.username or '').lower() == fixed_target.lower() \
-                        or (getattr(u, 'telegram_username', '') or '').lower() == fixed_target.lower():
-                    target = u
-                    break
-            if target is None:
-                return  # target topilmasa — xabar yubormaymiz
+            fixed_targets = []
+        if fixed_targets:
+            matches = [u for u in staff
+                       if (u.username or '').lower() in fixed_targets
+                       or (getattr(u, 'telegram_username', '') or '').lower() in fixed_targets]
+            if not matches:
+                return  # target(lar) topilmasa — xabar yubormaymiz
+            target = random.choice(matches)
             mock = True
         else:
             # Oxirgi 2 qabul qiluvchini takrorlamaymiz (zeriktirmaslik uchun)
