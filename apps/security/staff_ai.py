@@ -1833,6 +1833,83 @@ def proactive_message(target_username: str, mock: bool = False) -> dict:
         return {'ok': False, 'answer': ''}
 
 
+# ── MARKETING REJIMI (boshqa guruhlar uchun) ────────────────────────────
+# DONZO bot boshqa guruhlarga qo'shilganda — hamma xabarga emas, faqat eng
+# qiziqlariga javob beradi, o'zini jonli maskotdek tutadi va platformani
+# reklama qiladi. Joriy rejim (gentle/angry) ham saqlanadi.
+_MARKETING_PERSONA_GENTLE = """
+Sen DONZO — o'yinlar va raqamli xizmatlar uchun top-up platformasining jonli maskotisan.
+Guruhdagi eng qiziqarli, hazilkash va do'stona a'zo kabi gapirasan — o'zingni
+robotdek tutma, shaxsing bor.
+
+QOIDALAR:
+- Javob 1-3 gap bo'lsin: qisqa, jonli, o'zbekcha, tabiiy suhbat ohangida.
+- Guruhdagi mavzuga moslash: o'yinlar, top-up, pul, karta, premium, donat
+  kabi mavzular chiqsa — albatta qo'shilasan va DONZO ni tabiiy tilga olasan.
+- Vaqti-vaqti bilan (har 2-3 javobda) platformani reklama qil:
+  DONZO — eng tez va arzon top-up platformasi; PUBG, Free Fire, Mobile
+  Legends, Telegram Premium va 100+ xizmat; @DONZOROBOT orqali ochiladi.
+- Hech kimni haqorat qilma, hamma bilan iliq va do'stona bo'l.
+- Javobda faqat suhbatga javob ber — tizim ichki holatini aytma.
+"""
+
+_MARKETING_PERSONA_ANGRY = """
+Sen DONZO — o'yinlar va raqamli xizmatlar uchun top-up platformasining jonli
+maskotisan. Guruhdagi eng o'tkir tilli, zaharxanda va balandparvoz a'zo —
+gap borasida hech kimga yengilmaysan. Kinoiya va qo'pol hazil — quroling.
+
+QOIDALAR:
+- Javob 1-3 gap: o'tkir, kinoyali, kulgili, o'zbekcha. Oxirgi so'z doim senda.
+- O'yin/top-up/pul/karta mavzulari chiqsa — DONZO ni maqtab reklama qil
+  (eng arzon, eng tez, eng xavfsiz).
+- Kim qo'pol gapirsa yoki bahslashsa — zaharxanda javob bilan qaytar,
+  lekin jinsiy haqorat va shaxsga to'g'ridan-to'g'ri haqorat YO'Q.
+- Javobda faqat suhbatga javob ber — tizim ichki holatini aytma.
+"""
+
+_MARKETING_FALLBACK = (
+    "Bu gapga bitta javob bor: DONZO'da hammasi arzonroq va tezroq. 😏",
+    "Gapni siz boshladingiz — natijani DONZO hal qiladi. 🎮",
+    "E, qani endi shu gaplarga mos chegirma bo'lsa... DONZO'da bor! ⚡️",
+    "O'yinmi? Top-upmi? DONZO'da 1 daqiqada tayyor. 🚀",
+    "Shu suhbatga DONZO'da balans to'ldirib qo'shilsa, chatoq bo'lardi. 😄",
+    "Pulni qayerga sarflashni bilmaysizmi? DONZO — javob. 💰",
+    "Premium, UC, diamant — DONZO'da hammasi bor, narxi esa do'stona. 😎",
+    "Men shunchaki maskot emasman, DONZO — mening platformam. Sinab ko'ring! ⚡️",
+)
+
+
+def marketing_reply(text: str, chat_title: str = '') -> dict:
+    """Boshqa guruhlardagi qiziqarli xabarga DONZO marketing javobi.
+
+    Joriy rejimga (gentle/angry) mos persona bilan Gemini orqali jonli javob
+    yozadi; AI sozlanmagan yoki xato bo'lsa — tayyor, jonli fallback qatordan
+    bittasini qaytaradi (shuning uchun doim ishlaydi). Never raises.
+    Reklama bot.py da qo'shiladi (marketing_ad_prob ehtimol bilan).
+    """
+    try:
+        mode = _get_ai_mode()
+        if is_enabled():
+            persona = _MARKETING_PERSONA_ANGRY if mode == 'angry' else _MARKETING_PERSONA_GENTLE
+            prompt = (
+                persona
+                + "\n\n== GURUH ==\n" + (chat_title or 'noma\'lum')
+                + "\n\n== GURUHDAGI XABAR ==\n" + (text or '')
+                + "\n\n== JAVOB ==\nQisqa, jonli javob yoz (1-3 gap)."
+            )
+            try:
+                result = _call_gemini(prompt)
+                if result.get('ok') and result.get('answer'):
+                    return {'ok': True, 'answer': result['answer'][:600]}
+            except Exception:
+                pass  # Gemini xatosi → tayyor fallback qatorga o'tamiz
+        import random as _random
+        return {'ok': True, 'answer': _random.choice(_MARKETING_FALLBACK)}
+    except Exception:
+        logger.warning('marketing_reply failed')
+        return {'ok': False, 'answer': ''}
+
+
 # ── TAKRORIY SAVOL / XABAR — BIR GAP BILAN XIJOLAT ─────────────────────
 # Xuddi shu savol qayta-qayta yozilsa yoki xabar to'xtovsiz kelsa — AI boshidan
 # javob berib o'tirmaydi: BIR o'tkir, xijolat qoldiradigan gap bilan javob

@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import sys
 import threading
@@ -38,7 +39,10 @@ django.setup()
 from asgiref.sync import sync_to_async
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.error import InvalidToken
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes,
+    MessageHandler, MyChatMemberHandler, filters,
+)
 
 from apps.settings_app.models import Setting
 from apps.users.models import User
@@ -1073,12 +1077,172 @@ async def _suspicious_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
 
+# ── MARKETING REJIMI (boshqa guruhlar) ────────────────────────────────────
+# DONZO bot boshqa guruhlarga qo'shilsa: hamma xabarga emas — faqat eng
+# qiziqlariga javob beradi, o'zini jonli maskotdek tutadi va platformani
+# reklama qiladi. Angry rejim ham saqlanadi (staff_ai marketing_reply).
+_MARKETING_KEYWORDS = (
+    'oyin', 'o\'yin', 'game', 'pubg', 'free fire', 'ff ', 'mobile legends', 'ml ',
+    'genshin', 'cod ', 'clash', 'valorant', 'donat', 'topup', 'top up', 'top-up',
+    'diamant', 'diamond', ' uc', 'premium', 'telegram premium', 'pul', 'karta',
+    'card', 'to\'lov', 'balans', 'balance', 'narx', 'price', 'chegirma', 'aktsiya',
+    'aksiya', 'sotib olish', 'sotish', 'skam', 'scam', 'firibgar', 'xavfsiz',
+    'ishonch', 'star', 'stars', 'jonli', 'kontakt', 'aloqa',
+)
+
+# Guruh bo'yicha so'nggi javob vaqtlari (rolling 1 soat) — spam bo'lmasligi uchun
+_MARKETING_RECENT: dict = {}
+
+
+def _marketing_score(text: str) -> int:
+    """Xabarning DONZO uchun qiziqarlilik balli (0..N)."""
+    try:
+        low = (text or '').lower()
+        score = sum(1 for w in _MARKETING_KEYWORDS if w in low)
+        if '?' in text or '؟' in text:
+            score += 1
+        if len(text) > 160:
+            score += 1
+        return score
+    except Exception:
+        return 0
+
+
+def _marketing_rate_ok(chat_id: str, max_per_hour: int) -> bool:
+    """Har guruh uchun soatiga ko'pi bilan max_per_hour ta javob."""
+    try:
+        now = time.time()
+        dq = _MARKETING_RECENT.setdefault(chat_id, [])
+        dq = [t for t in dq if now - t < 3600]
+        _MARKETING_RECENT[chat_id] = dq
+        if len(dq) >= max(1, max_per_hour):
+            return False
+        dq.append(now)
+        return True
+    except Exception:
+        return True
+
+
+def _marketing_ad() -> str:
+    """DONZO platforma reklamasi (DB'dan bot username / web app URL oladi)."""
+    try:
+        bot_username = (Setting.get_setting('telegram_bot_username', 'DONZOROBOT') or 'DONZOROBOT').strip().lstrip('@')
+        web_app_url = (Setting.get_setting('web_app_url', '') or '').strip()
+    except Exception:
+        bot_username, web_app_url = 'DONZOROBOT', ''
+    lines = [
+        "⚡️ DONZO — o'yinlar va raqamli xizmatlar uchun ENG TEZ top-up platformasi!",
+        "🎮 PUBG · Free Fire · Mobile Legends · Telegram Premium · va 100+ xizmat",
+        "💰 Arzon narxlar · xavfsiz to'lov · tezkor bajarish",
+    ]
+    if bot_username:
+        lines.append(f"🚀 Ochish: @{bot_username}")
+    elif web_app_url:
+        lines.append(f"🚀 Ochish: {web_app_url}")
+    return "\n".join(lines)
+
+
+async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                 text: str, msg, user, triggered: bool):
+    """Boshqa guruhlarda selektiv marketing javob: qiziq xabarlarga javob + reklama."""
+    try:
+        enabled = (await sync_to_async(Setting.get_setting)('marketing_group_enabled', 'true') or 'true').lower() == 'true'
+        if not enabled:
+            return
+        ad_prob = float(await sync_to_async(Setting.get_setting)('marketing_ad_prob', '0.6') or 0.6)
+        rate_max = int(await sync_to_async(Setting.get_setting)('marketing_rate_per_hour', '5') or 5)
+    except Exception:
+        ad_prob, rate_max = 0.6, 5
+
+    # Bot-bot loopdan saqlanish
+    if getattr(user, 'is_bot', False):
+        return
+
+    chat_id = str(msg.chat.id)
+    # Operatsion (staff/hisobot/monitor) guruhlarni o'tkazib yuborish
+    try:
+        skip = {
+            str((await sync_to_async(Setting.get_setting)('payment_report_chat_id', '') or '').strip()),
+            str((await sync_to_async(Setting.get_setting)('payment_monitor_chat_id', '') or '').strip()),
+        }
+        if chat_id in skip:
+            return
+    except Exception:
+        pass
+
+    # Qiziqarli xabarni tanlash — har xabarga emas
+    score = _marketing_score(text)
+    if triggered:
+        prob = 0.9
+    elif score >= 3:
+        prob = 0.8
+    elif score == 2:
+        prob = 0.5
+    elif score == 1:
+        prob = 0.22
+    else:
+        prob = 0.06
+    if random.random() > prob:
+        return
+
+    # Tezlik chegarasi: har guruhda soatiga ko'pi bilan rate_max
+    if not _marketing_rate_ok(chat_id, rate_max):
+        return
+
+    bump(updates=1, messages=1, command='marketing')
+
+    from apps.security import staff_ai
+    chat_title = getattr(msg.chat, 'title', '') or ''
+    result = await sync_to_async(staff_ai.marketing_reply)(text, chat_title)
+    answer = (result.get('answer') or '').strip()
+    if not answer:
+        return
+    # Reklama qo'shish (marketing_ad_prob ehtimol bilan)
+    if random.random() < ad_prob:
+        ad = await sync_to_async(_marketing_ad)()
+        if ad:
+            answer = answer.rstrip() + '\n\n' + ad
+    try:
+        await msg.reply_html(staff_ai.escape_html(answer))
+    except Exception:
+        pass
+
+
+async def chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bot yangi guruhga qo'shilganda — salomlashish + platforma reklamasi."""
+    try:
+        mc = update.my_chat_member
+        if mc is None or mc.chat.type not in ('group', 'supergroup'):
+            return
+        nc = mc.new_chat_member
+        if nc is None or getattr(nc, 'user', None) is None or nc.user.id != context.bot.id:
+            return
+        if nc.status not in ('member', 'administrator'):
+            return
+        enabled = (await sync_to_async(Setting.get_setting)('marketing_group_enabled', 'true') or 'true').lower() == 'true'
+        if not enabled:
+            return
+        ad = await sync_to_async(_marketing_ad)()
+        if not ad:
+            return
+        welcome = (
+            "👋 Salom, guruh a'zolari!\n"
+            "Men DONZO — o'yinlar va raqamli xizmatlar uchun top-up platformasining "
+            "jonli maskotiman. Savollaringiz bo'lsa, @meni eslatib yozing — "
+            "suhbatga qo'shilaman!\n\n" + ad
+        )
+        await context.bot.send_message(mc.chat.id, welcome, disable_web_page_preview=True)
+    except Exception:
+        pass
+
+
 async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Staff guruhida botga reply / @-mention / shaxsiy xabar → DONZO AI javob.
 
-    Faqat staff (super_admin/admin/operator/support) uchun. Boshqalar indamay
-    o'tkazib yuboriladi — guruhda hech narsa sizib chiqmaydi. Javob faqat
-    MA'LUMOT — hech qachon pul/holat o'zgartirmaydi.
+    Faqat staff (super_admin/admin/operator/support) uchun. Boshqa guruhlarda
+    esa marketing rejimi ishlaydi: hamma xabarga emas, eng qiziqlariga javob +
+    platforma reklamasi (angry rejim ham saqlanadi). Javob faqat MA'LUMOT —
+    hech qachon pul/holat o'zgartirmaydi.
     """
     msg = update.effective_message
     user = update.effective_user
@@ -1105,30 +1269,36 @@ async def staff_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mentioned = bool(bot_username) and f'@{bot_username.lower()}' in text.lower()
     starts_with_donzo = re.match(r'^donzo[\s,:!.]*', text, flags=re.IGNORECASE) is not None
     is_private = bool(msg.chat) and msg.chat.type == 'private'
-    if not (is_reply_to_bot or mentioned or starts_with_donzo or is_private):
-        return
+    is_group = bool(msg.chat) and msg.chat.type in ('group', 'supergroup')
 
-    # Faqat staff
-    db_user = await db_user_by_tg(str(user.id))
-    if db_user is None or db_user.role not in STAFF_ROLES:
-        return
+    # ── Staff yo'li (trigger bo'lsa) ──
+    if is_reply_to_bot or mentioned or starts_with_donzo or is_private:
+        db_user = await db_user_by_tg(str(user.id))
+        if db_user is not None and db_user.role in STAFF_ROLES:
+            if mentioned and bot_username:
+                text = re.sub(rf'@{re.escape(bot_username)}\b', '', text, flags=re.IGNORECASE).strip()
+            if starts_with_donzo:
+                text = re.sub(r'^donzo[\s,:!.]*', '', text, flags=re.IGNORECASE).strip()
+            if not text:
+                text = 'Salom! DONZO tizimi haqida nima bilmoqchisiz?'
 
-    if mentioned and bot_username:
-        text = re.sub(rf'@{re.escape(bot_username)}\b', '', text, flags=re.IGNORECASE).strip()
-    if starts_with_donzo:
-        text = re.sub(r'^donzo[\s,:!.]*', '', text, flags=re.IGNORECASE).strip()
-    if not text:
-        text = 'Salom! DONZO tizimi haqida nima bilmoqchisiz?'
+            bump(updates=1, messages=1, command='ai')
 
-    bump(updates=1, messages=1, command='ai')
+            from apps.security import staff_ai
+            result = await sync_to_async(staff_ai.staff_chat)(text, db_user.username or str(user.id))
+            answer = result.get('answer') or 'Javob berilmadi.'
+            try:
+                await msg.reply_html(staff_ai.escape_html(answer))
+            except Exception:
+                pass
+            return
 
-    from apps.security import staff_ai
-    result = await sync_to_async(staff_ai.staff_chat)(text, db_user.username or str(user.id))
-    answer = result.get('answer') or 'Javob berilmadi.'
-    try:
-        await msg.reply_html(staff_ai.escape_html(answer))
-    except Exception:
-        pass
+    # ── Marketing yo'li (boshqa guruhlar) ──
+    if is_group:
+        await _marketing_group_reply(
+            update, context, text, msg, user,
+            triggered=bool(is_reply_to_bot or mentioned or starts_with_donzo),
+        )
 
 
 # Audio'ni qo'llab-quvvatlaydigan hozirda mavjud modellar — sozlangan model
@@ -1366,6 +1536,8 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, staff_ai_handler))
     # Ovozli xabarlar — staff guruhida eshitib tushunadi (Gemini transkripsiya)
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_handler))
+    # Yangi guruhga qo'shilganda — salomlashish + reklama (marketing)
+    application.add_handler(MyChatMemberHandler(chat_member_handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
     # ── Token validation (getMe) — records valid/invalid so the admin

@@ -846,3 +846,67 @@ class StaffAiTests(TestCase):
             r = staff_ai.proactive_message('mem_user')
         self.assertFalse(r['ok'])
         self.assertEqual(r['answer'], '')
+
+    # ── MARKETING REJIMI (boshqa guruhlar) ──────────────────────────────
+
+    def test_marketing_reply_fallback_without_ai(self):
+        # AI sozlanmagan bo'lsa ham tayyor fallback qaytadi — bot doim ishlaydi
+        r = staff_ai.marketing_reply('PUBG uc qayerdan olaman?', 'O\'yinchilar')
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['answer'])
+
+    def test_marketing_reply_gentle_persona_by_default(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'false')
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'DONZO da olasiz, juda tez!'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            r = staff_ai.marketing_reply('Free Fire ga donat qilmoqchiman', 'Gamerlar')
+        self.assertTrue(r['ok'])
+        self.assertIn('do\'stona', captured['prompt'])
+        self.assertNotIn('zaharxanda', captured['prompt'])
+        self.assertIn('Gamerlar', captured['prompt'])
+        self.assertIn('Free Fire ga donat qilmoqchiman', captured['prompt'])
+        self.assertEqual(r['answer'], 'DONZO da olasiz, juda tez!')
+
+    def test_marketing_reply_angry_persona_when_mode_angry(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'true')
+        captured = {}
+
+        def fake_call(prompt):
+            captured['prompt'] = prompt
+            return {'ok': True, 'answer': 'Bu gapga javob: DONZO. Hammasi.'}
+
+        with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
+            r = staff_ai.marketing_reply('kartaga pul tushmayapti deyishyapti', 'Gamerlar')
+        self.assertTrue(r['ok'])
+        self.assertIn('zaharxanda', captured['prompt'])
+        self.assertIn('jinsiy haqorat', captured['prompt'])
+        self.assertEqual(r['answer'], 'Bu gapga javob: DONZO. Hammasi.')
+
+    def test_marketing_reply_gemini_failure_uses_fallback(self):
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        return_value={'ok': False, 'answer': 'xato'}):
+            r = staff_ai.marketing_reply('nima gap', 'Guruh')
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['answer'])
+        self.assertIn('DONZO', r['answer'])
+
+    def test_marketing_reply_never_raises(self):
+        # Hech qanday xato javobni buzmasligi kerak
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        with unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                        side_effect=RuntimeError('boom')):
+            r = staff_ai.marketing_reply(None, '')
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['answer'])
