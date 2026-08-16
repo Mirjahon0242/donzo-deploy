@@ -104,7 +104,7 @@ def _post(url: str, body: dict, timeout: int = 45) -> tuple:
 
 
 def chat(prompt: str, configured_model: str = None, temperature: float = 0.4,
-         max_tokens: int = 1024, timeout: int = 45) -> dict:
+         max_tokens: int = 1024, timeout: int = 45, api_key: str = None) -> dict:
     """Matn so'rovi — rotatsiya bilan. Returns {'ok', 'answer', 'model'}.
 
     Hech qachon exception tashlamaydi. Barcha modellar xato bersa
@@ -112,6 +112,15 @@ def chat(prompt: str, configured_model: str = None, temperature: float = 0.4,
     """
     if not prompt or not prompt.strip():
         return {'ok': False, 'answer': 'Bo\'sh so\'rov'}
+    # API kalit kiritilmasa — sozlamadan o'qiymiz (sinxron kontekst uchun).
+    if not api_key:
+        try:
+            from apps.settings_app.models import Setting
+            api_key = Setting.get_setting('gemini_api_key', '') or ''
+        except Exception:
+            api_key = ''
+    if not api_key:
+        return {'ok': False, 'answer': 'Gemini API kaliti sozlanmagan (gemini_api_key)'}
     last_code = None
     last_name = None
     for model in _model_order(configured_model or 'gemini-3.6-flash'):
@@ -119,7 +128,7 @@ def chat(prompt: str, configured_model: str = None, temperature: float = 0.4,
             'contents': [{'parts': [{'text': prompt}]}],
             'generationConfig': {'temperature': temperature, 'maxOutputTokens': max_tokens},
         }
-        url = GEMINI_URL.format(model=model)
+        url = GEMINI_URL.format(model=model) + f'?key={api_key}'
         try:
             status, raw = _post(url, body, timeout=timeout)
         except Exception as exc:

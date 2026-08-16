@@ -198,7 +198,8 @@ def _raw_chat(prompt: str) -> dict:
 
     try:
         from .gemini_client import chat as _gemini_chat
-        res = _gemini_chat(prompt, configured_model=s.get('gemini_model'), temperature=0.2, max_tokens=1024)
+        res = _gemini_chat(prompt, configured_model=s.get('gemini_model'), temperature=0.2,
+                           max_tokens=1024, api_key=s.get('gemini_api_key'))
         if res['ok']:
             return {'ok': True, 'answer': res['answer'][:1500]}
         return {'ok': False, 'answer': res.get('answer', 'AI mavjud emas')}

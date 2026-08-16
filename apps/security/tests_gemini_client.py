@@ -34,7 +34,7 @@ class GeminiClientTests(unittest.TestCase):
             return 200, '{"candidates":[{"content":{"parts":[{"text":"salom donzo"}]}}]}'
 
         with mock.patch.object(gemini_client, '_post', side_effect=fake_post):
-            res = gemini_client.chat('salom', configured_model='gemini-3.6-flash')
+            res = gemini_client.chat('salom', configured_model='gemini-3.6-flash', api_key='test-key')
         self.assertTrue(res['ok'])
         self.assertEqual(res['answer'], 'salom donzo')
         self.assertGreater(len(calls), 1)
@@ -47,7 +47,7 @@ class GeminiClientTests(unittest.TestCase):
             return 429, '{"error":{"message":"Quota exceeded ... retry in 5s"}}'
 
         with mock.patch.object(gemini_client, '_post', side_effect=fake_post):
-            res = gemini_client.chat('salom', configured_model='gemini-3.6-flash')
+            res = gemini_client.chat('salom', configured_model='gemini-3.6-flash', api_key='test-key')
         self.assertFalse(res['ok'])
         self.assertIn('quota', res.get('answer', '').lower())
 
