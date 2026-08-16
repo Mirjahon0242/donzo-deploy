@@ -315,6 +315,14 @@ class SiteSetting:
         'security_lockdown': 'False',
         'security_blacklist': '',
         'security_whitelist': '',
+
+        # ── Marketing (boshqa guruhlarda reklama + selektiv javob) ──
+        # marketing_group_enabled — bot guruhlarda marketing qiladimi;
+        # marketing_ad_prob — javobga reklama qo'shilish ehtimoli (0.0-1.0);
+        # marketing_rate_per_hour — har guruhda soatiga maks javob soni.
+        'marketing_group_enabled': 'False',
+        'marketing_ad_prob': '0.6',
+        'marketing_rate_per_hour': '5',
     }
 
     @classmethod
