@@ -154,6 +154,68 @@ class StaffAiTests(TestCase):
         self.assertEqual(staff_ai._conv_advance('detail', 'rahmat, yetarli'), 'done')
         self.assertEqual(staff_ai._conv_advance('done', 'yana savol'), 'start')
 
+    # ── REJIM (muloyim / angry) testlari ──────────────────────────────────
+
+    def test_default_mode_is_gentle(self):
+        # Default rejim — muloyim
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, '')
+        self.assertEqual(staff_ai._get_ai_mode(), 'gentle')
+
+    def test_mode_on_command_switches_to_angry(self):
+        # "donzo angry rejimini yoq" → agressiv rejimga o'tadi
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'false')
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        r = staff_ai.staff_chat('donzo angry rejimini yoq', 'mode_user')
+        self.assertTrue(r['ok'])
+        self.assertIn('Angry', r['answer'])
+        self.assertEqual(staff_ai._get_ai_mode(), 'angry')
+
+    def test_mode_off_command_switches_to_gentle(self):
+        # "angry rejimini o'chir" → muloyim rejimga qaytadi
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'true')
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        r = staff_ai.staff_chat("angry rejimini o'chir", 'mode_user2')
+        self.assertTrue(r['ok'])
+        self.assertEqual(staff_ai._get_ai_mode(), 'gentle')
+
+    def test_gentle_mode_repeat_gets_kind_reminder(self):
+        # Muloyim rejimda takroriy savol — yumshoq eslatma, xijolat gapi EMAS
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'false')
+        Setting.set_setting('staff_ai_conv_mode_rep_user', '')
+        fake = unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                          return_value={'ok': True, 'answer': 'GEMINI'})
+        fake.start()
+        try:
+            staff_ai.staff_chat('karta limiti qanday?', 'mode_rep_user')
+            r2 = staff_ai.staff_chat('karta limiti qanday?', 'mode_rep_user')
+            self.assertTrue(r2['ok'])
+            self.assertNotEqual(r2['answer'], 'GEMINI')
+            self.assertNotIn('egangnikini', r2['answer'].lower())
+            self.assertIn('savol', r2['answer'].lower())
+        finally:
+            fake.stop()
+
+    def test_angry_mode_repeat_gets_shame_line(self):
+        # Angry rejimda takroriy savol — xijolat gapi
+        Setting.set_setting('gemini_api_key', 'fake-key')
+        Setting.set_setting('security_ai_enabled', 'true')
+        Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'true')
+        Setting.set_setting('staff_ai_conv_mode_rep2_user', '')
+        fake = unittest.mock.patch.object(staff_ai, '_call_gemini',
+                                          return_value={'ok': True, 'answer': 'GEMINI'})
+        fake.start()
+        try:
+            staff_ai.staff_chat('karta limiti qanday?', 'mode_rep2_user')
+            r2 = staff_ai.staff_chat('karta limiti qanday?', 'mode_rep2_user')
+            self.assertTrue(r2['ok'])
+            self.assertNotEqual(r2['answer'], 'GEMINI')
+        finally:
+            fake.stop()
+
     def test_repeat_question_gets_shame_line(self):
         # Xuddi shu savol takrorlansa — boshidan javob emas, xijolat gapi keladi
         Setting.set_setting('gemini_api_key', 'fake-key')
