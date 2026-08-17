@@ -305,7 +305,8 @@ def _proactive_loop():
     """DONZO proaktiv suhbat loopi — staff guruhida o'zi "yashab" turadi.
 
     Sozlamalar:
-      staff_ai_proactive_enabled   — 'true'/'false' (default true)
+      staff_ai_proactive_enabled   — 'true'/'false' (default false — staff guruhida
+                                     bot o'z-o'zidan yozmaydi, faqat unga yozilganda javob beradi)
       staff_ai_proactive_interval_min — daqiqada interval (default 45)
     Xato hech narsani buzmaydi; loop abadiy ishlaydi.
     """
@@ -314,7 +315,7 @@ def _proactive_loop():
         interval = 45 * 60
         try:
             from apps.settings_app.models import Setting
-            enabled = (Setting.get_setting('staff_ai_proactive_enabled', 'true') or 'true').lower() == 'true'
+            enabled = (Setting.get_setting('staff_ai_proactive_enabled', 'false') or 'false').lower() == 'true'
             if enabled:
                 _send_proactive_message()
             minutes = float(Setting.get_setting('staff_ai_proactive_interval_min', '45') or 45)
