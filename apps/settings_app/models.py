@@ -329,6 +329,11 @@ class SiteSetting:
         'marketing_daily_enabled': 'False',
         'marketing_daily_time': '09:00',
         'marketing_daily_image': '',
+        # marketing_roast_enabled — guruh a'zolarini username bilan kinoyali
+        # murojaat qilish (staff/hisobot/monitor guruhlari mustasno);
+        # marketing_roast_interval_min — murojaatlar orasidagi interval (daqiqa).
+        'marketing_roast_enabled': 'False',
+        'marketing_roast_interval_min': '20',
     }
 
     @classmethod
