@@ -1366,46 +1366,20 @@ def _marketing_rate_ok(chat_id: str, max_per_hour: int) -> bool:
 
 
 def _marketing_ad() -> str:
-    """DONZO platforma reklamasi — har xil kinoyali variantlar, tasodifiy tanlanadi
-    (DB'dan bot username / web app URL oladi)."""
-    try:
-        bot_username = (Setting.get_setting('telegram_bot_username', 'DONZOROBOT') or 'DONZOROBOT').strip().lstrip('@')
-        web_app_url = (Setting.get_setting('web_app_url', '') or '').strip()
-    except Exception:
-        bot_username, web_app_url = 'DONZOROBOT', ''
-    open_line = (f"🚀 Ochish: @{bot_username}" if bot_username
-                 else (f"🚀 Ochish: {web_app_url}" if web_app_url else ''))
+    """DONZO'ni tabiiy eslatish — OCHIQ reklama emas, xuddi suhbat orasida
+    tasodifan tashlangan jumladek. Banner, ro'yxat, emoji-bo'ron YO'Q —
+    odam shunday deyishi mumkin bo'lgan oddiy gap."""
     ads = [
-        [
-            "⚡️ DONZO — o'yinlar va raqamli xizmatlar uchun ENG TEZ top-up platformasi!",
-            "🎮 PUBG · Free Fire · Mobile Legends · Telegram Premium · va 100+ xizmat",
-            "💰 Arzon narxlar · xavfsiz to'lov · tezkor bajarish",
-        ],
-        [
-            "🤨 Hali ham boshqa joylarda narx solishtiryapsizmi?",
-            "⚡️ DONZO'da ham arzon, ham 1 daqiqada tayyor — vaqtingizni behuda sarflamang.",
-            "🎮 PUBG · Free Fire · ML · Telegram Premium",
-        ],
-        [
-            "😏 O'yinda qolib ketishdan qo'rqasizmi?",
-            "🚀 DONZO'da top-up 1 daqiqada — o'yin sizni kutmaydi, DONZO esa kutmaydi ham.",
-            "💰 Eng arzon narxlar, xavfsiz to'lov.",
-        ],
-        [
-            "🔪 Boshqa joylarda ko'zingiz o'g'riydigan narxlar?",
-            "⚡️ DONZO'da esa hamyoncha arzon, hamyoncha tez — ikki marta o'ylash shart emas.",
-            "🎮 100+ xizmat · @DONZOROBOT orqali",
-        ],
-        [
-            "💸 Pulni qayerga sarflashni bilmayapsizmi?",
-            "⚡️ DONZO — javob: top-up, premium, hammasi bitta joyda, 1 daqiqada.",
-            "💰 Eng arzon narxlar · xavfsiz to'lov",
-        ],
+        "o'sha yerda olasan-da, donzoda — nimaga boshqa joyda qiynalasan",
+        "donzo degan joy bor, shu yerda yozasan-da, tayyor",
+        "men o'sha yerdan olaman, donzo deydilar — boshqa gap yo'q",
+        "donzoda olasan, xolos. boshqa savol tugatildi",
+        "qayerdan? donzoda-da, nimaga o'ylab o'tiribsan",
+        "donzodan ol, tez bo'ladi — o'zim ishlataman, bilaman",
+        "hali ham izlayapsanmi? donzo bor, yozasan-da, bo'ldi",
+        "men o'shani donzodan olaman — arzonroq ham chiqadi",
     ]
-    chosen = random.choice(ads)
-    if open_line:
-        chosen = chosen + [open_line]
-    return "\n".join(chosen)
+    return random.choice(ads)
 
 
 def _track_group_conversation(chat_id: str, text: str):
@@ -1530,14 +1504,17 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     # Reklama: har javobga emas — suhbat qiziqgan joyda. Har 3-javobda kamida
-    # bitta reklama; qolgan hollarda ad_prob ehtimol bilan.
+    # bitta reklama; qolgan hollarda ad_prob ehtimol bilan. Javobning o'zida
+    # donzo tabiiy aytilgan bo'lsa — qo'shimcha reklama qo'shilmaydi (takror
+    # bo'lib, ochiq reklamaga o'xshab qolmasin).
     sent_ad = False
     reply_count = (conv or {}).get('reply_count', 0) + 1
     force_ad = (reply_count % 3 == 0)
-    if force_ad or random.random() < ad_prob:
+    already_mentioned = 'donzo' in answer.lower()
+    if (force_ad or random.random() < ad_prob) and not already_mentioned:
         ad = await sync_to_async(_marketing_ad)()
         if ad:
-            answer = answer.rstrip() + '\n\n' + ad
+            answer = answer.rstrip() + ' ' + ad
             sent_ad = True
     try:
         await msg.reply_html(staff_ai.escape_html(answer))
