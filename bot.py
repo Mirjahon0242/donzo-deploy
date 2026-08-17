@@ -1221,26 +1221,15 @@ _MARKETING_KEYWORDS = (
 # Guruh bo'yicha so'nggi javob vaqtlari (rolling 1 soat) — spam bo'lmasligi uchun
 _MARKETING_RECENT: dict = {}
 
-# Guruh a'zolari (username bo'yicha) — bot kimlarni ko'rgan bo'lsa, keyin ularga
-# username orqali murojaat qilish uchun. chat_id -> {username: last_seen_ts}
-_GROUP_MEMBERS: dict = {}
-# Qaysi a'zoga oxirgi marta masxara qilingan (takrorlanmasligi uchun)
-_GROUP_ROASTED: dict = {}  # chat_id -> {username: last_roast_ts}
+def _record_group_member(chat_id: str, username: str, first_name: str = '',
+                         user_id=None):
+    """Marketing guruhida ko'rilgan a'zoni DB'da eslab qoladi (username bilan).
 
-
-def _record_group_member(chat_id: str, username: str):
-    """Marketing guruhida ko'rilgan a'zoni eslab qoladi (username bilan)."""
+    Bot qayta ishga tushsa ham a'zolar saqlanadi — jadval: marketing_group_members.
+    """
     try:
-        if not chat_id or not username:
-            return
-        now = time.time()
-        members = _GROUP_MEMBERS.setdefault(chat_id, {})
-        members[username.lower()] = now
-        # 7 kun harakatsiz a'zolarni tozalash
-        cutoff = now - 7 * 86400
-        for u, ts in list(members.items()):
-            if ts < cutoff:
-                members.pop(u, None)
+        from apps.settings_app.models import MarketingGroupMember
+        MarketingGroupMember.record_member(chat_id, username, first_name, user_id)
     except Exception:
         pass
 
@@ -1249,12 +1238,15 @@ def _send_group_roast():
     """Marketing guruhidagi a'zolarni username orqali kinoyali masxara bilan
     murojaat qiladi — "guruhdagi hammaga gapirib chiqadi".
 
-    Har safar kamroq masxara qilingan a'zoni tanlaydi (30 daqiqada bir marta
-    odamga). Staff/hisobot/monitor guruhlariga hech qachon yozmaydi. Xato
-    hech narsani buzmaydi.
+    A'zolar DB'dan o'qiladi (marketing_group_members) — bot restart bo'lsa ham
+    kimlarni bilganini eslab qoladi. Har safar kamroq masxara qilingan a'zoni
+    tanlaydi (30 daqiqada bir marta odamga). Staff/hisobot/monitor guruhlariga
+    hech qachon yozmaydi. Xato hech narsani buzmaydi.
     """
     try:
-        from apps.settings_app.models import MarketingGroupStat, Setting
+        from django.utils import timezone
+        from datetime import timedelta
+        from apps.settings_app.models import MarketingGroupMember, MarketingGroupStat, Setting
         if not (Setting.get_setting('marketing_roast_enabled', 'false') or 'false').lower() == 'true':
             return
         token = Setting.get_setting('telegram_bot_token', '') or ''
@@ -1264,19 +1256,32 @@ def _send_group_roast():
                 str((Setting.get_setting('payment_monitor_chat_id', '') or '').strip())}
         from apps.security import staff_ai
 
+        now = timezone.now()
+        cutoff = now - timedelta(minutes=30)
+        # 7 kun harakatsiz a'zolarni tozalash (vaqti-vaqti bilan)
+        MarketingGroupMember.prune(days=7)
+
         candidates = []
-        now = time.time()
-        for cid, members in list(_GROUP_MEMBERS.items()):
-            if cid in skip or not members:
+        members = (MarketingGroupMember.objects
+                   .filter(last_seen_at__gte=now - timedelta(days=7))
+                   .values('chat_id', 'username', 'last_seen_at', 'last_roast_at')
+                   .order_by('chat_id'))
+        per_chat = {}
+        for m in members:
+            cid = str(m['chat_id'])
+            if cid in skip:
                 continue
-            roasted = _GROUP_ROASTED.setdefault(cid, {})
+            per_chat.setdefault(cid, []).append(m)
+
+        for cid, rows in per_chat.items():
             best, best_score = None, None
-            for uname, last_seen in list(members.items()):
-                if now - roasted.get(uname, 0) < 1800:  # 30 daqiqada bir marta
+            for r in rows:
+                last_roast = r.get('last_roast_at')
+                if last_roast and last_roast > cutoff:  # 30 daqiqada bir marta
                     continue
-                score = (last_seen or 0) - roasted.get(uname, 0)
+                score = (r['last_seen_at'] - (last_roast or r['last_seen_at'])).total_seconds()
                 if best_score is None or score > best_score:
-                    best, best_score = uname, score
+                    best, best_score = r['username'], score
             if best:
                 candidates.append((cid, best))
         if not candidates:
@@ -1292,7 +1297,7 @@ def _send_group_roast():
         res2 = _tg_api(token, 'sendMessage', payload)
         if not (res2 and res2.get('ok')):
             return
-        _GROUP_ROASTED.setdefault(cid, {})[username] = now
+        MarketingGroupMember.mark_roasted(cid, username, when=now)
         try:
             title = (MarketingGroupStat.objects.filter(chat_id=cid)
                      .values_list('chat_title', flat=True).first()) or ''
@@ -1417,7 +1422,9 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
 
     chat_id = str(msg.chat.id)
     # A'zoni eslab qolamiz — keyin username orqali murojaat qilish uchun
-    _record_group_member(chat_id, getattr(user, 'username', None) or '')
+    _record_group_member(chat_id, getattr(user, 'username', None) or '',
+                         getattr(user, 'first_name', '') or '',
+                         getattr(user, 'id', None))
     # Operatsion (staff/hisobot/monitor) guruhlarni o'tkazib yuborish
     try:
         skip = {
