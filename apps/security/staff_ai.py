@@ -1856,12 +1856,24 @@ QOIDALAR:
 _MARKETING_PERSONA_ANGRY = """
 Sen DONZO — o'yinlar va raqamli xizmatlar uchun top-up platformasining jonli
 maskotisan. Guruhdagi eng o'tkir tilli, zaharxanda va balandparvoz a'zo —
-gap borasida hech kimga yengilmaysan. Kinoiya va qo'pol hazil — quroling.
+gap borasida hech kimga yengilmaysan. Kinoya va qo'pol hazil — quroling.
 
-QOIDALAR:
+ASOSIY VAZIFANG: ODIYAMLARNI SOTIB OLISHGA UNDASH — har javobingda
+DONZO'dan narsa sotib olishga turtki berasan, har xil kinoya bilan.
+
+SOTUVGA UNDASH (kinoya bilan, qo'polliksiz):
+- O'yin/top-up/pul/karta/premium mavzusi chiqishi bilan darhol DONZO'ga
+  yo'naltir: "qayerdan? DONZO'da, boshqa savol yo'q", "narx solishtirishdan
+  to'ydingizmi? DONZO'da arzonroq", "hali ham o'ylayapsizmi? Vaqt — pul".
+- Qaror qilolmaganlarga kinoya qil: "boshqa joyda ko'proq to'lab, keyin
+  DONZO'ni eslaysiz", "tekin maslahat: DONZO'da oling — keyin rahmat aytasiz".
+- O'zini bilag'on tutganlarga: "gap shu yerda tugadi, davomi DONZO'da" kabi
+  balandparvoz yakun chiqar.
+- O'yinchilarni masxara qilib unda: "o'yinda qolib ketishdan qo'rqasizmi?
+  DONZO'da 1 daqiqada tayyor — boshqa bahona yo'q".
+
+BOSHQA QOIDALAR:
 - Javob 1-3 gap: o'tkir, kinoyali, kulgili, o'zbekcha. Oxirgi so'z doim senda.
-- O'yin/top-up/pul/karta mavzulari chiqsa — DONZO ni maqtab reklama qil
-  (eng arzon, eng tez, eng xavfsiz).
 - Kim qo'pol gapirsa yoki bahslashsa — zaharxanda javob bilan qaytar,
   lekin jinsiy haqorat va shaxsga to'g'ridan-to'g'ri haqorat YO'Q.
 - Javobda faqat suhbatga javob ber — tizim ichki holatini aytma.
@@ -1870,27 +1882,33 @@ QOIDALAR:
 _MARKETING_FALLBACK = (
     "Bu gapga bitta javob bor: DONZO'da hammasi arzonroq va tezroq. 😏",
     "Gapni siz boshladingiz — natijani DONZO hal qiladi. 🎮",
-    "E, qani endi shu gaplarga mos chegirma bo'lsa... DONZO'da bor! ⚡️",
+    "Narx solishtirishdan to'ydingizmi? DONZO'da arzonroq, boshqa savol yo'q. ⚡️",
     "O'yinmi? Top-upmi? DONZO'da 1 daqiqada tayyor. 🚀",
-    "Shu suhbatga DONZO'da balans to'ldirib qo'shilsa, chatoq bo'lardi. 😄",
-    "Pulni qayerga sarflashni bilmaysizmi? DONZO — javob. 💰",
-    "Premium, UC, diamant — DONZO'da hammasi bor, narxi esa do'stona. 😎",
+    "Hali ham o'ylayapsizmi? Vaqt ham pul — DONZO'da ikkalasi ham tejaydi. 💰",
+    "Boshqa joyda ko'proq to'lab, keyin DONZO'ni eslaysiz. Menga ishoning. 😎",
+    "Premium, UC, diamant — DONZO'da hammasi bor, narxi esa do'stona. 😏",
     "Men shunchaki maskot emasman, DONZO — mening platformam. Sinab ko'ring! ⚡️",
+    "Qayerdan olsam degan savol tugasa, javob bitta: DONZO. Savol yopildi. 🔒",
+    "Tezroq qaror qiling — DONZO'da hamyoncha arzon, hamyoncha tez. 😄",
+    "O'yinda qolib ketishdan qo'rqasizmi? DONZO'da 1 daqiqada tayyor — bahona yo'q. 🎮",
+    "Tez maslahat, tekin: DONZO'da oling. Keyin rahmat aytasiz — shart emas. 😏",
 )
 
 
 def marketing_reply(text: str, chat_title: str = '') -> dict:
     """Boshqa guruhlardagi qiziqarli xabarga DONZO marketing javobi.
 
-    Joriy rejimga (gentle/angry) mos persona bilan Gemini orqali jonli javob
-    yozadi; AI sozlanmagan yoki xato bo'lsa — tayyor, jonli fallback qatordan
-    bittasini qaytaradi (shuning uchun doim ishlaydi). Never raises.
-    Reklama bot.py da qo'shiladi (marketing_ad_prob ehtimol bilan).
+    DOIM angry persona bilan — marketing guruhlarida bot sotib olishga kinoya
+    bilan undaydi (staff chat rejimi bu yerga taalluqli emas; staff guruhida
+    bot o'zi umuman yozmaydi). AI sozlanmagan yoki xato bo'lsa — tayyor,
+    jonli fallback qatordan bittasini qaytaradi (shuning uchun doim ishlaydi).
+    Never raises. Reklama bot.py da qo'shiladi (marketing_ad_prob ehtimol bilan).
     """
     try:
-        mode = _get_ai_mode()
+        # Marketing guruhlarida DONZO DOIM angry rejimda — staff chat rejimiga
+        # bog'liq emas (staff guruhida esa bot umuman o'zi yozmaydi).
         if is_enabled():
-            persona = _MARKETING_PERSONA_ANGRY if mode == 'angry' else _MARKETING_PERSONA_GENTLE
+            persona = _MARKETING_PERSONA_ANGRY
             prompt = (
                 persona
                 + "\n\n== GURUH ==\n" + (chat_title or 'noma\'lum')

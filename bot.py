@@ -1125,22 +1125,46 @@ def _marketing_rate_ok(chat_id: str, max_per_hour: int) -> bool:
 
 
 def _marketing_ad() -> str:
-    """DONZO platforma reklamasi (DB'dan bot username / web app URL oladi)."""
+    """DONZO platforma reklamasi — har xil kinoyali variantlar, tasodifiy tanlanadi
+    (DB'dan bot username / web app URL oladi)."""
     try:
         bot_username = (Setting.get_setting('telegram_bot_username', 'DONZOROBOT') or 'DONZOROBOT').strip().lstrip('@')
         web_app_url = (Setting.get_setting('web_app_url', '') or '').strip()
     except Exception:
         bot_username, web_app_url = 'DONZOROBOT', ''
-    lines = [
-        "⚡️ DONZO — o'yinlar va raqamli xizmatlar uchun ENG TEZ top-up platformasi!",
-        "🎮 PUBG · Free Fire · Mobile Legends · Telegram Premium · va 100+ xizmat",
-        "💰 Arzon narxlar · xavfsiz to'lov · tezkor bajarish",
+    open_line = (f"🚀 Ochish: @{bot_username}" if bot_username
+                 else (f"🚀 Ochish: {web_app_url}" if web_app_url else ''))
+    ads = [
+        [
+            "⚡️ DONZO — o'yinlar va raqamli xizmatlar uchun ENG TEZ top-up platformasi!",
+            "🎮 PUBG · Free Fire · Mobile Legends · Telegram Premium · va 100+ xizmat",
+            "💰 Arzon narxlar · xavfsiz to'lov · tezkor bajarish",
+        ],
+        [
+            "🤨 Hali ham boshqa joylarda narx solishtiryapsizmi?",
+            "⚡️ DONZO'da ham arzon, ham 1 daqiqada tayyor — vaqtingizni behuda sarflamang.",
+            "🎮 PUBG · Free Fire · ML · Telegram Premium",
+        ],
+        [
+            "😏 O'yinda qolib ketishdan qo'rqasizmi?",
+            "🚀 DONZO'da top-up 1 daqiqada — o'yin sizni kutmaydi, DONZO esa kutmaydi ham.",
+            "💰 Eng arzon narxlar, xavfsiz to'lov.",
+        ],
+        [
+            "🔪 Boshqa joylarda ko'zingiz o'g'riydigan narxlar?",
+            "⚡️ DONZO'da esa hamyoncha arzon, hamyoncha tez — ikki marta o'ylash shart emas.",
+            "🎮 100+ xizmat · @DONZOROBOT orqali",
+        ],
+        [
+            "💸 Pulni qayerga sarflashni bilmayapsizmi?",
+            "⚡️ DONZO — javob: top-up, premium, hammasi bitta joyda, 1 daqiqada.",
+            "💰 Eng arzon narxlar · xavfsiz to'lov",
+        ],
     ]
-    if bot_username:
-        lines.append(f"🚀 Ochish: @{bot_username}")
-    elif web_app_url:
-        lines.append(f"🚀 Ochish: {web_app_url}")
-    return "\n".join(lines)
+    chosen = random.choice(ads)
+    if open_line:
+        chosen = chosen + [open_line]
+    return "\n".join(chosen)
 
 
 async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
