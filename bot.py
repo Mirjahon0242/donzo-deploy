@@ -301,6 +301,133 @@ def _send_proactive_message():
         print(f"[AI] Proaktiv xabar xatosi: {type(exc).__name__}", flush=True)
 
 
+def _tg_api(token: str, method: str, payload: dict):
+    """Telegram Bot API'ga POST — parsed json dict yoki None qaytaradi."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f'https://api.telegram.org/bot{token}/{method}',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return None
+
+
+def _tashkent_now():
+    """Hozirgi vaqt Asia/Tashkent vaqt mintaqasida (testlarda osongina almashtiriladi)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo('Asia/Tashkent'))
+
+
+def _send_daily_marketing():
+    """Kuniga bir marta (ertalab) marketing guruhlariga suratli reklama yuboradi.
+
+    Vaqt: marketing_daily_time (HH:MM, Asia/Tashkent) — default 09:00.
+    Surat: marketing_daily_image (URL) → bo'lmasa faol Banner image_url →
+    bo'lmasa faqat matnli xabar.
+    Guruhlar: MarketingGroupStat'da ro'yxatdan o'tgan (bot qo'shilgan) guruhlar.
+    Operatsion chatlar (hisobot/monitor) o'tkazib yuboriladi.
+    Kuniga bir marta: marketing_daily_last = sana markeri.
+    Hech qachon exception tashlamaydi — bot buzilmaydi.
+    """
+    try:
+        from apps.settings_app.models import MarketingGroupStat, Setting
+
+        if not (Setting.get_setting('marketing_daily_enabled', 'false') or 'false').lower() == 'true':
+            return
+        token = Setting.get_setting('telegram_bot_token', '') or ''
+        if not token:
+            return
+        # Vaqt: Asia/Tashkent (UTC+5) — ertalabgi reklama
+        try:
+            target = (Setting.get_setting('marketing_daily_time', '09:00') or '09:00').strip()
+            hh, mm = target.split(':')
+            target_min = int(hh) * 60 + int(mm)
+        except Exception:
+            target_min = 9 * 60
+        now = _tashkent_now()
+        now_min = now.hour * 60 + now.minute
+        if now_min < target_min:
+            return
+        # Kunlik marker — kuniga bir marta yuboriladi
+        last = Setting.get_setting('marketing_daily_last', '') or ''
+        today = now.strftime('%Y-%m-%d')
+        if last == today:
+            return
+
+        # Surat manbai: sozlama → faol Banner (admin panelda yuklangan)
+        image = (Setting.get_setting('marketing_daily_image', '') or '').strip()
+        if not image:
+            try:
+                from apps.banners.models import Banner
+                b = Banner.objects.filter(is_active=True).exclude(image_url='').first()
+                if b:
+                    image = b.image_url
+            except Exception:
+                image = ''
+        try:
+            bot_username = (Setting.get_setting('telegram_bot_username', 'DONZOROBOT') or 'DONZOROBOT').strip().lstrip('@')
+        except Exception:
+            bot_username = 'DONZOROBOT'
+        caption = "\n".join([
+            "🌅 Xayrli tong, guruh!",
+            "Bugun ham DONZO'da: eng arzon narxlar, 1 daqiqada top-up.",
+            "🎮 PUBG · Free Fire · Mobile Legends · Telegram Premium · 100+ xizmat",
+            f"🚀 Ochish: @{bot_username}",
+        ])
+
+        # Guruhlar: bot marketing qilgan barcha guruhlar (operatsionlardan tashqari)
+        skip = {str((Setting.get_setting('payment_report_chat_id', '') or '').strip()),
+                str((Setting.get_setting('payment_monitor_chat_id', '') or '').strip())}
+        groups = list(MarketingGroupStat.objects.all().values('chat_id', 'chat_title'))
+        sent = 0
+        for g in groups:
+            cid = str(g['chat_id'])
+            if not cid or cid in skip:
+                continue
+            try:
+                payload = {'chat_id': cid, 'caption': caption,
+                           'disable_web_page_preview': True}
+                ok = False
+                if image:
+                    payload['photo'] = image
+                    res = _tg_api(token, 'sendPhoto', payload)
+                    ok = bool(res and res.get('ok'))
+                if not ok:
+                    payload.pop('photo', None)
+                    payload['text'] = payload.pop('caption')
+                    res = _tg_api(token, 'sendMessage', payload)
+                    ok = bool(res and res.get('ok'))
+                if ok:
+                    MarketingGroupStat.record(cid, g.get('chat_title', ''), 'ad')
+                    sent += 1
+            except Exception:
+                continue
+        Setting.set_setting('marketing_daily_last', today)
+        print(f"[MARKETING] Kunlik reklama: {sent} guruhga yuborildi", flush=True)
+    except Exception as exc:
+        print(f"[MARKETING] Kunlik reklama xatosi: {type(exc).__name__}", flush=True)
+
+
+def _daily_marketing_loop():
+    """Har daqiqada tekshiradi: ertalab (marketing_daily_time) guruhlarga reklama.
+
+    Bot o'sha paytda o'chiq bo'lsa — keyingi ishga tushishda vaqt o'tgan bo'lsa
+    ham yuboriladi (marker: kuniga bir marta). Xato hech narsani buzmaydi.
+    """
+    time.sleep(120)  # bot ishga tushishini kutamiz (DB tayyor bo'lsin)
+    while True:
+        try:
+            _send_daily_marketing()
+        except Exception:
+            pass
+        time.sleep(60)
+
+
 def _proactive_loop():
     """DONZO proaktiv suhbat loopi — staff guruhida o'zi "yashab" turadi.
 
@@ -1627,6 +1754,10 @@ def main():
     # staff a'zolarini belgilab, hazil/tanqid bilan xabar yozadi.
     threading.Thread(target=_proactive_loop, daemon=True).start()
     print("[BOT] Proaktiv suhbat: staff a'zolariga o'zi xabar yozadi")
+
+    # Kunlik ertalabki marketing reklamasi (suratli) — marketing guruhlariga.
+    threading.Thread(target=_daily_marketing_loop, daemon=True).start()
+    print("[BOT] Kunlik marketing reklamasi: har kuni ertalab guruhlarga (suratli)")
 
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)

@@ -323,6 +323,12 @@ class SiteSetting:
         'marketing_group_enabled': 'False',
         'marketing_ad_prob': '0.6',
         'marketing_rate_per_hour': '5',
+        # marketing_daily_enabled — kunlik ertalabki suratli reklama yoq/o'chir;
+        # marketing_daily_time — yuborish vaqti (HH:MM, Asia/Tashkent);
+        # marketing_daily_image — surat URL (bo'sh bo'lsa faol Banner ishlatiladi).
+        'marketing_daily_enabled': 'False',
+        'marketing_daily_time': '09:00',
+        'marketing_daily_image': '',
     }
 
     @classmethod
