@@ -41,7 +41,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppI
 from telegram.error import InvalidToken
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes,
-    MessageHandler, MyChatMemberHandler, filters,
+    MessageHandler, ChatMemberHandler, filters,
 )
 
 from apps.settings_app.models import Setting
@@ -1554,7 +1554,10 @@ def main():
     # Ovozli xabarlar — staff guruhida eshitib tushunadi (Gemini transkripsiya)
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_handler))
     # Yangi guruhga qo'shilganda — salomlashish + reklama (marketing)
-    application.add_handler(MyChatMemberHandler(chat_member_handler))
+    # PTB 21.1'da MyChatMemberHandler yo'q — ChatMemberHandler + MY_CHAT_MEMBER
+    # filtri bilan (bir xil natija: faqat BOTNING o'z holati o'zgarishi).
+    application.add_handler(ChatMemberHandler(
+        chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
     # ── Token validation (getMe) — records valid/invalid so the admin
