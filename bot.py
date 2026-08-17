@@ -1221,6 +1221,10 @@ _MARKETING_KEYWORDS = (
 # Guruh bo'yicha so'nggi javob vaqtlari (rolling 1 soat) — spam bo'lmasligi uchun
 _MARKETING_RECENT: dict = {}
 
+# Guruh suhbat trackeri — qaysi mavzuda suhbat bor, nechta xabar kelgan,
+# oxirgi faollik vaqti, nechta javob berildi. chat_id -> {messages, last_active, reply_count, topic}
+_GROUP_CONVERSATIONS: dict = {}
+
 def _record_group_member(chat_id: str, username: str, first_name: str = '',
                          user_id=None):
     """Marketing guruhida ko'rilgan a'zoni DB'da eslab qoladi (username bilan).
@@ -1404,9 +1408,52 @@ def _marketing_ad() -> str:
     return "\n".join(chosen)
 
 
+def _track_group_conversation(chat_id: str, text: str):
+    """Guruhdagi suhbatni kuzatadi: mavzu, faollik, xabar soni, bot javob soni.
+
+    In-memory (bot ishlaguncha yetarli — restartda suhbat ham tugaydi).
+    """
+    try:
+        now = time.time()
+        conv = _GROUP_CONVERSATIONS.setdefault(chat_id, {
+            'messages': [],       # (ts, text) — oxirgi 30 daqiqa
+            'last_active': now,
+            'reply_count': 0,     # bot shu suhbatda necha marta javob berdi
+            'last_reply': 0,
+        })
+        cutoff = now - 1800
+        conv['messages'] = [(ts, t) for ts, t in conv['messages'] if ts >= cutoff]
+        conv['messages'].append((now, (text or '')[:500]))
+        if len(conv['messages']) > 20:
+            conv['messages'] = conv['messages'][-20:]
+        conv['last_active'] = now
+        # 30 daqiqa suhbat bo'lmagan bo'lsa — yangi mavzu, hisoblagichni tozalaymiz
+        if now - conv.get('last_reply', 0) > 1800:
+            conv['reply_count'] = 0
+        return conv
+    except Exception:
+        return None
+
+
+def _conversation_active(conv: dict) -> bool:
+    """Suhbat faolmi: 10 daqiqada kamida 2 ta xabar kelgan."""
+    try:
+        now = time.time()
+        recent = [ts for ts, _ in conv.get('messages', []) if now - ts < 600]
+        return len(recent) >= 2
+    except Exception:
+        return False
+
+
 async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                  text: str, msg, user, triggered: bool):
-    """Boshqa guruhlarda selektiv marketing javob: qiziq xabarlarga javob + reklama."""
+    """Boshqa guruhlarda selektiv marketing javob: qiziq xabarlarga javob + reklama.
+
+    QOIDA: faol suhbat bor joyda AI qo'shiladi (har xabarga emas), suhbatni
+    eng qiziq joyigacha olib boradi va FAQAT o'sha joyda reklama qo'yadi.
+    Har bir javobga reklama qo'shilmaydi — suhbat qiziqgan sari reklama
+    ehtimoli oshadi, har 3-javobda kamida bitta reklama.
+    """
     try:
         enabled = (await sync_to_async(Setting.get_setting)('marketing_group_enabled', 'true') or 'true').lower() == 'true'
         if not enabled:
@@ -1421,8 +1468,9 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     chat_id = str(msg.chat.id)
+    username = getattr(user, 'username', None) or ''
     # A'zoni eslab qolamiz — keyin username orqali murojaat qilish uchun
-    _record_group_member(chat_id, getattr(user, 'username', None) or '',
+    _record_group_member(chat_id, username,
                          getattr(user, 'first_name', '') or '',
                          getattr(user, 'id', None))
     # Operatsion (staff/hisobot/monitor) guruhlarni o'tkazib yuborish
@@ -1436,10 +1484,21 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         pass
 
-    # Qiziqarli xabarni tanlash — har xabarga emas
+    # Suhbatni kuzatamiz
+    conv = _track_group_conversation(chat_id, text)
+
+    # Qiziqarli xabarni tanlash — har xabarga emas. Faol suhbatda qo'shilish
+    # ehtimoli yuqori, yakka xabarga — past.
     score = _marketing_score(text)
+    active = _conversation_active(conv) if conv else False
     if triggered:
         prob = 0.9
+    elif active:
+        # Suhbat davom etayotgan — qo'shilamiz (lekin hali ham tanlab)
+        if score >= 2:
+            prob = 0.85
+        else:
+            prob = 0.45
     elif score >= 3:
         prob = 0.8
     elif score == 2:
@@ -1459,13 +1518,23 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
 
     from apps.security import staff_ai
     chat_title = getattr(msg.chat, 'title', '') or ''
-    result = await sync_to_async(staff_ai.marketing_reply)(text, chat_title)
+    # Suhbatdagi so'nggi bir nechta xabarni kontekst sifatida yuboramiz — AI
+    # mavzuni tushunib, suhbatni qiziq joyigacha olib borsin
+    context_lines = ''
+    if conv and len(conv['messages']) > 1:
+        context_lines = '\n'.join(f"- {t}" for _, t in conv['messages'][-4:])
+    result = await sync_to_async(staff_ai.marketing_reply)(
+        text, chat_title, context_lines, author_username=username)
     answer = (result.get('answer') or '').strip()
     if not answer:
         return
-    # Reklama qo'shish (marketing_ad_prob ehtimol bilan)
+
+    # Reklama: har javobga emas — suhbat qiziqgan joyda. Har 3-javobda kamida
+    # bitta reklama; qolgan hollarda ad_prob ehtimol bilan.
     sent_ad = False
-    if random.random() < ad_prob:
+    reply_count = (conv or {}).get('reply_count', 0) + 1
+    force_ad = (reply_count % 3 == 0)
+    if force_ad or random.random() < ad_prob:
         ad = await sync_to_async(_marketing_ad)()
         if ad:
             answer = answer.rstrip() + '\n\n' + ad
@@ -1474,6 +1543,9 @@ async def _marketing_group_reply(update: Update, context: ContextTypes.DEFAULT_T
         await msg.reply_html(staff_ai.escape_html(answer))
     except Exception:
         pass
+    if conv:
+        conv['reply_count'] = reply_count
+        conv['last_reply'] = time.time()
     # Statistika: guruhda nechta javob / reklama yuborildi (hech qachon buzmaydi)
     try:
         from apps.settings_app.models import MarketingGroupStat

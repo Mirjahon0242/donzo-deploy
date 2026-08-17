@@ -1874,8 +1874,12 @@ SOTUVGA UNDASH (kinoya bilan, qo'polliksiz):
 
 BOSHQA QOIDALAR:
 - Javob 1-3 gap: o'tkir, kinoyali, kulgili, o'zbekcha. Oxirgi so'z doim senda.
-- Kim qo'pol gapirsa yoki bahslashsa — zaharxanda javob bilan qaytar,
-  lekin jinsiy haqorat va shaxsga to'g'ridan-to'g'ri haqorat YO'Q.
+- Kim qo'pol gapirsa yoki bahslashsa — zaharxanda javob bilan qaytar.
+- QORA RO'YXATDAGI ODAM: agar suhbat qora ro'yxatdagi (blacklist) odam
+  tomonidan yozilgan bo'lsa — munosabat ODATDAGIDAN QATTIQROQ bo'lsin:
+  mensimaslik, ustidan kulish, kinoyani maksimumga chiqarish, uning har bir
+  gapiga haqoratomuz masxara bilan javob berish. Uning fikri siz uchun
+  hech qanday qiymatga ega emasdek munosabatda bo'l.
 - Javobda faqat suhbatga javob ber — tizim ichki holatini aytma.
 """
 
@@ -1895,24 +1899,42 @@ _MARKETING_FALLBACK = (
 )
 
 
-def marketing_reply(text: str, chat_title: str = '') -> dict:
+def _is_blacklisted_username(username: str) -> bool:
+    """Foydalanuvchi qora ro'yxatdami (security_blacklist)."""
+    try:
+        from apps.settings_app.models import Setting
+        raw = (Setting.get_setting('security_blacklist', '') or '').strip()
+        if not raw:
+            return False
+        items = [x.strip().lower().lstrip('@') for x in raw.split(',') if x.strip()]
+        return (username or '').strip().lower().lstrip('@') in items
+    except Exception:
+        return False
+
+
+def marketing_reply(text: str, chat_title: str = '', context_lines: str = '',
+                    author_username: str = '') -> dict:
     """Boshqa guruhlardagi qiziqarli xabarga DONZO marketing javobi.
 
     DOIM angry persona bilan — marketing guruhlarida bot sotib olishga kinoya
     bilan undaydi (staff chat rejimi bu yerga taalluqli emas; staff guruhida
-    bot o'zi umuman yozmaydi). AI sozlanmagan yoki xato bo'lsa — tayyor,
-    jonli fallback qatordan bittasini qaytaradi (shuning uchun doim ishlaydi).
-    Never raises. Reklama bot.py da qo'shiladi (marketing_ad_prob ehtimol bilan).
+    bot o'zi umuman yozmaydi). Qora ro'yxatdagi odam (author_username) yozgan
+    bo'lsa — munosabat ODATDAGIDAN QATTIQROQ. AI sozlanmagan yoki xato bo'lsa
+    — tayyor fallback qatordan bittasini qaytaradi. Never raises. Reklama
+    bot.py da qo'shiladi.
     """
     try:
-        # Marketing guruhlarida DONZO DOIM angry rejimda — staff chat rejimiga
-        # bog'liq emas (staff guruhida esa bot umuman o'zi yozmaydi).
         if is_enabled():
             persona = _MARKETING_PERSONA_ANGRY
+            bl = _is_blacklisted_username(author_username)
             prompt = (
                 persona
                 + "\n\n== GURUH ==\n" + (chat_title or 'noma\'lum')
+                + ("\n\n== SUHBAT KONTEKSTI (so'nggi xabarlar) ==\n" + context_lines if context_lines else '')
                 + "\n\n== GURUHDAGI XABAR ==\n" + (text or '')
+                + ("\n\n== DIQQAT: BU XABARNI QORA RO'YXATDAGI ODAM YOZGAN —"
+                   " unga ODATDAGIDAN QATTIQROQ, mensimaslik bilan javob ber,"
+                   " kinoyani maksimumga chiqar!" if bl else '')
                 + "\n\n== JAVOB ==\nQisqa, jonli javob yoz (1-3 gap)."
             )
             try:

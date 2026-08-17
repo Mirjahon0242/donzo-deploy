@@ -855,7 +855,9 @@ class StaffAiTests(TestCase):
         self.assertTrue(r['ok'])
         self.assertTrue(r['answer'])
 
-    def test_marketing_reply_gentle_persona_by_default(self):
+    def test_marketing_reply_always_angry_persona(self):
+        # Marketing guruhlarida DONZO DOIM angry persona — staff chat rejimiga
+        # bog'liq emas. Gentle rejimda ham sotib olishga undovchi kinoya ishlaydi.
         Setting.set_setting('gemini_api_key', 'fake-key')
         Setting.set_setting('security_ai_enabled', 'true')
         Setting.set_setting(staff_ai.ANGY_MODE_KEY, 'false')
@@ -868,8 +870,8 @@ class StaffAiTests(TestCase):
         with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
             r = staff_ai.marketing_reply('Free Fire ga donat qilmoqchiman', 'Gamerlar')
         self.assertTrue(r['ok'])
-        self.assertIn('do\'stona', captured['prompt'])
-        self.assertNotIn('zaharxanda', captured['prompt'])
+        self.assertIn('zaharxanda', captured['prompt'])
+        self.assertIn('SOTIB OLISHGA UNDASH', captured['prompt'])
         self.assertIn('Gamerlar', captured['prompt'])
         self.assertIn('Free Fire ga donat qilmoqchiman', captured['prompt'])
         self.assertEqual(r['answer'], 'DONZO da olasiz, juda tez!')
@@ -888,7 +890,8 @@ class StaffAiTests(TestCase):
             r = staff_ai.marketing_reply('kartaga pul tushmayapti deyishyapti', 'Gamerlar')
         self.assertTrue(r['ok'])
         self.assertIn('zaharxanda', captured['prompt'])
-        self.assertIn('jinsiy haqorat', captured['prompt'])
+        self.assertIn('SOTUVGA UNDASH', captured['prompt'])
+        self.assertIn('QORA RO\'YXATDAGI ODAM', captured['prompt'])
         self.assertEqual(r['answer'], 'Bu gapga javob: DONZO. Hammasi.')
 
     def test_marketing_reply_gemini_failure_uses_fallback(self):
