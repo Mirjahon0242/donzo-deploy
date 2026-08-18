@@ -1011,7 +1011,7 @@ class StaffAiTests(TestCase):
             r = staff_ai.marketing_reply('Free Fire ga donat qilmoqchiman', 'Gamerlar')
         self.assertTrue(r['ok'])
         self.assertIn('jahldor', captured['prompt'])
-        self.assertIn('SOTUVNI YASHIRIB QIL', captured['prompt'])
+        self.assertIn('REKLAMA', captured['prompt'])
         self.assertIn('Gamerlar', captured['prompt'])
         self.assertIn('Free Fire ga donat qilmoqchiman', captured['prompt'])
         self.assertEqual(r['answer'], 'DONZO da olasiz, juda tez!')
@@ -1029,9 +1029,9 @@ class StaffAiTests(TestCase):
         with unittest.mock.patch.object(staff_ai, '_call_gemini', side_effect=fake_call):
             r = staff_ai.marketing_reply('kartaga pul tushmayapti deyishyapti', 'Gamerlar')
         self.assertTrue(r['ok'])
-        self.assertIn('INSON KABI', captured['prompt'])
-        self.assertIn('SOTUVNI YASHIRIB QIL', captured['prompt'])
-        self.assertIn('QORA RO\'YXATDAGI ODAM', captured['prompt'])
+        self.assertIn('ODAM KABI', captured['prompt'])
+        self.assertIn('REKLAMA', captured['prompt'])
+        self.assertIn('QORA RO', captured['prompt'])
         self.assertEqual(r['answer'], 'Bu gapga javob: DONZO. Hammasi.')
 
     def test_marketing_reply_gemini_failure_uses_fallback(self):
