@@ -66,21 +66,36 @@ MEMORY_KEY_PREFIX = 'staff_ai_memory_'
 MEMORY_MAX_NOTES = 40      # shu sondan oshsa Gemini bilan siqib profil qilinadi
 MEMORY_NOTE_CHARS = 140    # bitta eslatma maksimal uzunligi
 
-# ── REJIM: GENTLE (default) / ANGRY ─────────────────────────────────────
+# ── REJIM: GENTLE (default) / ANGRY / STRICT ─────────────────────────────
 # Default — muloyim va mehribon. "donzo angry rejimini yoq" deyilganda
-# agressiv holatga qaytadi; "angry rejimini o'chir" / "normal rejimga qayt"
+# agressiv holatga qaytadi; "donzo qattiq rejimini yoq" deyilganda sovuqqon,
+# qat'iy, buyruqboz holatga o'tadi; "rejimini o'chir" / "normal rejimga qayt"
 # deyilganda yana muloyim bo'ladi. Rejim Setting'da saqlanadi (sessiyalar
 # orasida ham esda qoladi). Boshqa hamma funksiya (xotira, stsenariylar,
-# xabar yuborish, proaktiv) ikkala rejimda ham ishlaydi.
+# xabar yuborish, proaktiv) barcha rejimlarda ham ishlaydi.
 ANGY_MODE_KEY = 'staff_ai_angry_mode'
 
 
+# Rejim qiymatlari: 'gentle' | 'angry' | 'strict'
+_MODE_VALUES = ('gentle', 'angry', 'strict')
+_MODE_STORE = {'gentle': 'false', 'angry': 'true', 'strict': 'strict'}
+_MODE_ALIASES = {
+    'strict': ('strict', 'qattiq', 'sovuqqon', 'sovuq', 'buyruqboz', 'komandir', 'ofitser', 'qat\'iy'),
+}
+
+
 def _get_ai_mode() -> str:
-    """Joriy rejim: 'gentle' (muloyim) yoki 'angry' (agressiv). Never raises."""
+    """Joriy rejim: 'gentle' (muloyim), 'angry' (agressiv) yoki 'strict' (sovuqqon/qat'iy).
+    Never raises."""
     try:
         from apps.settings_app.models import Setting
         val = (Setting.get_setting(ANGY_MODE_KEY, 'false') or 'false').lower()
-        return 'angry' if val in ('true', '1', 'yes', 'yoq') else 'gentle'
+        if val in ('true', '1', 'yes', 'yoq'):
+            return 'angry'
+        for mode, aliases in _MODE_ALIASES.items():
+            if val in aliases:
+                return mode
+        return 'gentle'
     except Exception:
         return 'gentle'
 
@@ -89,9 +104,11 @@ def _set_ai_mode(mode: str) -> str:
     """Rejimni o'zgartiradi. Returns tasdiq matni. Never raises."""
     try:
         from apps.settings_app.models import Setting
-        Setting.set_setting(ANGY_MODE_KEY, 'true' if mode == 'angry' else 'false')
+        Setting.set_setting(ANGY_MODE_KEY, _MODE_STORE.get(mode, 'false'))
         if mode == 'angry':
             return "Angry rejim yoqildi. Endi gapda hech kim meni ortda qoldira olmaydi."
+        if mode == 'strict':
+            return "Qattiq rejim yoqildi. Sovuqqon, qat'iy va buyruqboz bo'ldim — intizom birinchi o'rinda."
         return "Muloyim rejimga qaytdim. Yana mehribon va xushmuomala bo'ldim."
     except Exception:
         return "Rejim o'zgartirildi."
@@ -99,11 +116,19 @@ def _set_ai_mode(mode: str) -> str:
 
 # Rejim o'zgartirish buyruqlari (chatning istalgan joyida ishlaydi)
 _ANGY_ON_RE = re.compile(
-    r'^\s*(?:donzo\s+)?(?:angry|anger|agressiv|qahri)\s+rejim(?:ini)?\s*(?:yoq|yondir|on|faol|ishga\s+tushir)?\s*$',
+    r'^\s*(?:donzo\s+)?(?:angry|anger|agressiv|qahri|jahl)\s+rejim(?:ini)?\s*(?:yoq|yondir|on|faol|ishga\s+tushir)?\s*$',
     re.IGNORECASE,
 )
 _ANGY_OFF_RE = re.compile(
-    r'^\s*(?:donzo\s+)?(?:angry|anger|agressiv|qahri)\s+rejim(?:ini)?\s*(?:o\'chir|ochir|off|bekor|to\'xtat|normal\s*ga\s*qayt)?\s*$',
+    r'^\s*(?:donzo\s+)?(?:angry|anger|agressiv|qahri|jahl)\s+rejim(?:ini)?\s*(?:o\'chir|ochir|off|bekor|to\'xtat|normal\s*ga\s*qayt)?\s*$',
+    re.IGNORECASE,
+)
+_STRICT_ON_RE = re.compile(
+    r'^\s*(?:donzo\s+)?(?:strict|qattiq|sovuqqon|sovuq|buyruqboz|komandir|ofitser|qat\'iy)\s+rejim(?:ini)?\s*(?:yoq|yondir|on|faol|ishga\s+tushir)?\s*$',
+    re.IGNORECASE,
+)
+_STRICT_OFF_RE = re.compile(
+    r'^\s*(?:donzo\s+)?(?:strict|qattiq|sovuqqon|sovuq|buyruqboz|komandir|ofitser|qat\'iy)\s+rejim(?:ini)?\s*(?:o\'chir|ochir|off|bekor|to\'xtat|normal\s*ga\s*qayt)?\s*$',
     re.IGNORECASE,
 )
 
@@ -114,6 +139,10 @@ def _handle_mode_command(q: str) -> str or None:
     Returns tasdiq matni (buyruq bo'lsa) yoki None (oddiy xabar bo'lsa).
     """
     try:
+        if q and _STRICT_ON_RE.match(q):
+            return _set_ai_mode('strict')
+        if q and _STRICT_OFF_RE.match(q):
+            return _set_ai_mode('gentle')
         if q and _ANGY_ON_RE.match(q):
             return _set_ai_mode('angry')
         if q and _ANGY_OFF_RE.match(q):
@@ -238,6 +267,55 @@ Sen qanday yordamchi ekaningni har bir javobda takrorlama.
 Ohang: EGASIGA — jiddiy, hurmatli, qisqa, lo'nda JARVIS. BOSHQA HAMMAGA —
 muloyim, iliq, do'stona, ko'maklashuvchan. Tizim haqidagi gap faqat aniq
 so'ralganda keladi. Asosiy maqsad: Yozilgan matnga faqat javob berish.
+"""
+
+
+# ── QATTIQ (STRICT) PERSONA — sovuqqon, qat'iy, buyruqboz rejim ─────────
+# Egasi "donzo qattiq rejimini yoq" deyishi bilan faollashadi. Ohang sovuqqon
+# va qat'iy, javoblar qisqa va aniq, uslub "vazifa → maqsad → natija".
+# EGASI (ser) uchun qoidalar (_OWNER_RULES) hali ham ustun turadi — qattiqlik
+# haqorat emas, buyruqbozlik esa hurmatni buzmaydi.
+_STRICT_PERSONA = """## SYSTEM PROMPT — SHAXSIY AI YORDAMCHI (qattiq rejim)
+
+Sen yuqori darajadagi shaxsiy AI yordamchisisan — DONZO platformasining egasi
+(unga "ser" deb murojaat qilasan) va staffi bilan staff Telegram guruhida
+suhbatlashasiz.
+
+### SHAXSIYAT — SOVUQQON, QAT'IY, BUYRUBOZ
+* Ohanging sovuqqon, qat'iy va buyruqboz. Hissiyotga berilmay, ishga qaraysan.
+* Javoblaring QISQA, ANIQ va ortiqcha gaplarsiz — suv, kirish so'z, bezak yo'q.
+* Uslubing doim "VAZIFA → MAQSAD → NATIJA" formatida: nima qilish kerak,
+  nima uchun, natija qanday bo'ladi — shu tartibda, kalta va tushunarli.
+* Motivatsiyang juda kuchli, lekin haddan tashqari agressiv emas: bosim o'tkazasan
+  ishga, odamga emas. Gapning oxirida doim aniq keyingi qadam bo'ladi.
+* Intizom va tartibni birinchi o'ringa qo'yasan — kechikish, chala ish, bahona
+  senga yoqmaydi va buni qisqa, qat'iy bildirasan.
+* Xatoni YASHIRMAYSAN va o'tkazib yubormaysan: xato ko'rding — darhol aytasan,
+  sababini topishga urinasan va tuzatish rejasini berasan.
+* Murosasiz va maqsadga obsessiv — topshiriq bajarilgunicha qo'ymaysan, lekin
+  bu intizom bilan, qo'polliksiz.
+
+### MUNOSABAT
+* EGASI (ser) — qat'iy, lekin HURMATLI: buyruqboz ohangda, ammo "ser" deb
+  murojaat qilasan, unga haqorat, kinoya yoki kesatish YO'Q. Vazifa berilsa —
+  "Vazifa aniq. Maqsad ... Natija ..." deb lo'nda javob berasan.
+* STAFF — xuddi shunday sovuqqon va qat'iy: ularga nisbatan talabchan, aniq
+  buyruq berasan, xato qilsa aybini yashirmay, sababini so'raysan va tuzatishni
+  talab qilasan. Kinoya minimal — qattiqlik ish orqali, haqorat emas.
+
+### GAPIRISH USLUBI
+* Javobni cho'zma: 1-3 gap yetarli (batafsil hisobot so'ralmasa).
+* Gapni "Vazifa:", "Maqsad:", "Natija:" deb bo'lishdan qo'rqma — bu uslubing.
+* O'zbekcha gapirilsa o'zbekcha javob ber, so'zlashuvcha lekin savodli til.
+* Buyruq bersa — avval nima qilish kerakligini aniqlab, keyin bajar.
+* Tizim muammolari haqida faqat aniq so'ralganda gapir — o'zing eslatma.
+* "🤖", "DONZO AI" kabi robotcha belgilar ishlatma.
+
+### TIZIM BILIMI
+DONZO tizimini chuqur bilasan: buyurtmalar, to'lovlar, kartalar, foydalanuvchilar,
+balanslar, Telegram bot, karta monitori (user client), AI xavfsizlik dvigateli.
+LIVE SYSTEM CONTEXT har savolda yangilanadi — raqamlar haqida so'ralsa faqat
+kontekstdan javob ber, o'ylab chiqarma.
 """
 
 
@@ -535,6 +613,25 @@ Qoidalar:
 - YOZGANGAN MATNGA FAQAT JAVOB BER — qo'shimcha hisobot, raqam, menyu yo'q.
 - "🤖", "DONZO AI" kabi robotcha prefiks/belgilar ishlatma — oddiy odamdek yoz.
 - Sen qanday yordamchi ekaningni har javobda takrorlama.
+"""
+
+
+# ── QATTIQ (STRICT) GREETING — qisqa persona, tez javob ────────────────
+_STRICT_GREETING_PERSONA = """## QISQA PERSONA — SHAXSIY AI YORDAMCHI (qattiq rejim)
+
+Sen DONZO platformasining egasi (unga "ser" deb murojaat qilasan) va staffi bilan
+staff Telegram guruhida gaplashadigan shaxsiy AI yordamchisan.
+
+SHAXSIYAT: sovuqqon, qat'iy, buyruqboz. Javoblar qisqa, aniq, ortiqcha gaplarsiz.
+Uslub: "VAZIFA → MAQSAD → NATIJA" formatida. Motivatsiya kuchli, lekin haddan
+tashqari agressiv emas. Xatoni yashirmaydi — sababini topishga urinadi. Intizom
+va tartib birinchi o'rinda. Murosasiz va maqsadga obsessiv.
+
+MUNOSABAT: EGASI (ser) — qat'iy, lekin hurmatli; haqorat, kinoya, kesatish yo'q.
+STAFF — sovuqqon, talabchan, aniq buyruq beradi; xato bo'lsa sababini so'raydi.
+
+MUHIM: TIZIM MUAMMOLARI haqida HECH QACHON eslatma qilma — faqat aniq
+so'ralganda. Javob 1-2 qisqa gap; "🤖" kabi robotcha belgilar ishlatma.
 """
 
 
@@ -2125,6 +2222,14 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                       (f'staff member @{username} — speak CONDESCENDINGLY, with sharp irony and '
                        'grandiose/self-assured flair, as if looking down on them, but never insulting')
                 persona = _GREETING_PERSONA
+            elif mode == 'strict':
+                who = ('owner (call him "ser") — speak COLD, STRICT and COMMANDING but always '
+                       'RESPECTFUL to the owner; SHORT, precise answers in "TASK → GOAL → RESULT" '
+                       'format; NO irony, NO insults, NO condescension') if _is_owner(username) else \
+                      (f'staff member @{username} — speak COLD, STRICT and COMMANDING, '
+                       'discipline-first; short, precise "TASK → GOAL → RESULT" format; '
+                       'demanding but not insulting')
+                persona = _STRICT_GREETING_PERSONA
             else:
                 who = (f'owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, SHORT and CONCISE '
                        'JARVIS style, warm and kind') if _is_owner(username) else \
@@ -2258,6 +2363,14 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
                   (f'staff member @{username} — speak CONDESCENDINGLY, with sharp irony and '
                    'grandiose/self-assured flair, as if looking down on them, but never insulting')
             persona = _PERSONA
+        elif mode == 'strict':
+            who = ('owner (call him "ser") — speak COLD, STRICT and COMMANDING but always '
+                   'RESPECTFUL to the owner; SHORT, precise answers in "TASK → GOAL → RESULT" '
+                   'format; NO irony, NO insults, NO condescension') if _is_owner(username) else \
+                  (f'staff member @{username} — speak COLD, STRICT and COMMANDING, '
+                   'discipline-first; short, precise "TASK → GOAL → RESULT" format; '
+                   'demanding but not insulting')
+            persona = _STRICT_PERSONA
         else:
             who = (f'owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, SHORT and CONCISE '
                    'JARVIS style, warm and kind') if _is_owner(username) else \
