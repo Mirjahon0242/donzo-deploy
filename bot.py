@@ -1243,7 +1243,8 @@ def _send_group_roast():
     murojaat qiladi — "guruhdagi hammaga gapirib chiqadi".
 
     A'zolar DB'dan o'qiladi (marketing_group_members) — bot restart bo'lsa ham
-    kimlarni bilganini eslab qoladi. Har safar kamroq masxara qilingan a'zoni
+    kimlarni bilganini eslab qoladi. Agar DB bo'sh bo'lsa — Telegram API orqali
+    a'zolarni olib, DB'ga yozadi. Har safar kamroq masxara qilingan a'zoni
     tanlaydi (30 daqiqada bir marta odamga). Staff/hisobot/monitor guruhlariga
     hech qachon yozmaydi. Xato hech narsani buzmaydi.
     """
@@ -1264,6 +1265,11 @@ def _send_group_roast():
         cutoff = now - timedelta(minutes=30)
         # 7 kun harakatsiz a'zolarni tozalash (vaqti-vaqti bilan)
         MarketingGroupMember.prune(days=7)
+
+        # Agar DB'da a'zolar yo'q bo'lsa — Telegram API orqali adminlarni olib kelamiz
+        db_count = MarketingGroupMember.objects.count()
+        if db_count == 0:
+            _fetch_and_record_group_members(token, skip)
 
         candidates = []
         members = (MarketingGroupMember.objects
@@ -1311,6 +1317,41 @@ def _send_group_roast():
         print(f"[MARKETING] Masxara: @{username} ({cid})", flush=True)
     except Exception as exc:
         print(f"[MARKETING] Masxara xatosi: {type(exc).__name__}", flush=True)
+
+
+def _fetch_and_record_group_members(token: str, skip: set):
+    """Telegram API orqali guruhlardagi adminlarni olib, DB'ga yozadi.
+
+    Faqat getChatAdministrators ishlatiladi — u har doim mavjud.
+    Bot admin bo'lgan guruhlardagi barcha a'zolarni record qiladi.
+    """
+    try:
+        from apps.settings_app.models import MarketingGroupStat, MarketingGroupMember
+        from django.utils import timezone
+        groups = MarketingGroupStat.objects.values_list('chat_id', flat=True)
+        now = timezone.now()
+        for chat_id in groups:
+            cid = str(chat_id)
+            if cid in skip:
+                continue
+            # getChatAdministrators — faqat adminlar (bot ham admin bo'lishi kerak)
+            res = _tg_api(token, 'getChatAdministrators', {'chat_id': cid})
+            if res and res.get('ok'):
+                for member in res.get('result', []):
+                    user = member.get('user', {})
+                    uname = (user.get('username') or '').strip().lower()
+                    if not uname:
+                        continue
+                    MarketingGroupMember.record_member(
+                        chat_id=cid,
+                        username=uname,
+                        first_name=user.get('first_name', ''),
+                        user_id=user.get('id'),
+                        seen_at=now,
+                    )
+                print(f"[MARKETING] {cid}: {len(res.get('result', []))} admin a'zo yozildi", flush=True)
+    except Exception as exc:
+        print(f"[MARKETING] A'zolarni olish xatosi: {type(exc).__name__}", flush=True)
 
 
 def _group_roast_loop():
