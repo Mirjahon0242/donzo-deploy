@@ -1272,9 +1272,14 @@ def _send_group_roast():
             _fetch_and_record_group_members(token, skip)
 
         candidates = []
+        # Bot o'zini, egasini va hurmatli foydalanuvchilarni chiqarib tashlaymiz
+        bot_username = (Setting.get_setting('telegram_bot_username', '') or '').lower()
+        owner_id = (Setting.get_setting('super_admin_telegram_id', '') or '').strip()
+        respected_raw = (Setting.get_setting('staff_ai_respected_users', '') or '').lower()
+        respected = {u.strip().lstrip('@') for u in respected_raw.split(',') if u.strip()}
         members = (MarketingGroupMember.objects
                    .filter(last_seen_at__gte=now - timedelta(days=7))
-                   .values('chat_id', 'username', 'last_seen_at', 'last_roast_at')
+                   .values('chat_id', 'username', 'last_seen_at', 'last_roast_at', 'user_id')
                    .order_by('chat_id'))
         per_chat = {}
         for m in members:
@@ -1286,12 +1291,20 @@ def _send_group_roast():
         for cid, rows in per_chat.items():
             best, best_score = None, None
             for r in rows:
+                uname = r['username']
+                # Bot, egasi va hurmatli foydalanuvchilarni o'tkazib yuboramiz
+                if uname == bot_username:
+                    continue
+                if str(r.get('user_id') or '') == owner_id:
+                    continue
+                if uname in respected:
+                    continue
                 last_roast = r.get('last_roast_at')
                 if last_roast and last_roast > cutoff:  # 30 daqiqada bir marta
                     continue
                 score = (r['last_seen_at'] - (last_roast or r['last_seen_at'])).total_seconds()
                 if best_score is None or score > best_score:
-                    best, best_score = r['username'], score
+                    best, best_score = uname, score
             if best:
                 candidates.append((cid, best))
         if not candidates:
