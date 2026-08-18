@@ -266,7 +266,7 @@ class SecuritySettingsView(APIView):
         'security_high_alerts_enabled', 'security_critical_alerts_enabled',
         'security_ack_timeout_min', 'security_escalation_timeout_min',
         'security_secondary_admin_id', 'security_lockdown',
-        'security_blacklist', 'security_whitelist',
+        'security_blacklist', 'security_whitelist', 'staff_ai_angry_mode',
     ]
 
     def get(self, request):
@@ -290,6 +290,7 @@ class SecuritySettingsView(APIView):
             'whitelist': Setting.get_setting('security_whitelist', ''),
             'gemini_configured': bool(s['gemini_api_key']),
             'ai_health': gemini_ai.health_check(),
+            'ai_mode': (Setting.get_setting('staff_ai_angry_mode', 'false') or 'false').lower(),
         })
 
     def put(self, request):
