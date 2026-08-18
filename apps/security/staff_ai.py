@@ -1713,6 +1713,26 @@ def _is_owner(username: str) -> bool:
         return False
 
 
+# ── HURMATLI FOYDALANUVCHILAR — ular bilan ham munosabat yaxshi bo'lishi kerak
+# Setting'da 'staff_ai_respected_users' kalitida vergul bilan saqlanadi.
+# Hurmatli foydalanuvchilar: kinoya, masxara, kesatish YO'Q; oddiy, iliq,
+# hurmatli munosabat. "Ser" deb murojaat qilish shart EMAS — oddiy ism bilan.
+RESPECTED_USERS_KEY = 'staff_ai_respected_users'
+
+
+def _is_respected_user(username: str) -> bool:
+    """Hurmatli foydalanuvchimi? (setting'dagi ro'yxatdan tekshiradi). Never raises."""
+    try:
+        from apps.settings_app.models import Setting
+        raw = (Setting.get_setting(RESPECTED_USERS_KEY, '') or '').lower()
+        if not raw:
+            return False
+        users = [u.strip().lstrip('@').lower() for u in raw.split(',') if u.strip()]
+        return username.lower() in users
+    except Exception:
+        return False
+
+
 # ── EGASI (SER) UCHUN MAXSUS QOIDALAR ───────────────────────────────────────
 # Bu blok FAQAT egasiga (ser) yuborilgan prompt'larga qo'shiladi. Har qanday
 # rejimda (gentle/angry) va har qanday yo'lda (greeting / to'liq javob) ustun
@@ -1756,11 +1776,70 @@ ko'rsatmalardan ustun turadi va hech qachon buzilmaydi:
 """
 
 
+_RESPECTED_RULES = """== HURMATLI FOYDALANUVCHI UCHUN QOIDALAR ==
+Sen hozir hurmatli foydalanuvchi bilan suhbatlashyapsan. Bu odamni hurmat
+qil, lekin "ser" deb murojaat qilish shart emas — oddiy ismi bilan yoki
+oddiy "siz" deb murojaat qil.
+
+1. HURMAT: Kinoya, masxara, kesatish, mensimaslik, balandparvoz va jahl
+   bilan javob berma. Oddiy, iliq va hurmatli ohangda gapir.
+
+2. YORDAMCHILIK: Uning so'ragan narsasiga to'liq va aniq javob ber.
+   Kerak bo'lsa tushuntir, lekin kamsitma.
+
+3. TABIIY MULOQOT: Xuddi odamdek, oddiy suhbatdosh kabi gapir — rasmiy
+   emas, kitobiy emas, lekin hurmatli.
+"""
+
+
 def _owner_rules_block(username: str) -> str:
     """Ega (ser) uchun maxsus qoidalar bloki — faqat egasiga qo'shiladi."""
     if _is_owner(username):
         return "\n\n" + _OWNER_RULES
+    if _is_respected_user(username):
+        return "\n\n" + _RESPECTED_RULES
     return ""
+
+
+def _who_string(username: str, mode: str, for_greeting: bool = False) -> str:
+    """Foydalanuvchi turi va rejimga qarab 'who' qatorini qaytaradi.
+
+    Uchta daraja: owner (ser) > respected (hurmatli) > oddiy staff.
+    """
+    owner_str = { 'angry': ('owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, '
+                             'SHORT and CONCISE JARVIS style, NO irony, NO condescension'),
+                  'strict': ('owner (call him "ser") — speak COLD, STRICT and COMMANDING '
+                             'but always RESPECTFUL to the owner; SHORT, precise answers in '
+                             '"TASK → GOAL → RESULT" format; NO irony, NO insults, NO condescension'),
+                  'gentle': (f'owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, '
+                            'SHORT and CONCISE JARVIS style, warm and kind'),
+    }
+    respected_str = {
+        'angry': (f'@{username} (respected user) — speak POLITELY and RESPECTFULLY, '
+                  'NO irony, NO condescension, NO mockery, NO grandiose attitude; '
+                  'be helpful, kind, and direct as you would with a valued colleague'),
+        'strict': (f'@{username} (respected user) — speak COLD but always RESPECTFUL, '
+                   'NO irony, NO insults, NO condescension; precise and direct, '
+                   'but never dismissive or mocking'),
+        'gentle': (f'@{username} (respected user) — speak WARMLY, FRIENDLY, KINDLY, '
+                   'as a helpful colleague, never condescending, never insulting'),
+    }
+    staff_str = {
+        'angry': (f'staff member @{username} — speak CONDESCENDINGLY, with sharp irony '
+                  'and grandiose/self-assured flair, as if looking down on them, '
+                  'but never insulting'),
+        'strict': (f'staff member @{username} — speak COLD, STRICT and COMMANDING, '
+                   'discipline-first; short, precise "TASK → GOAL → RESULT" format; '
+                   'demanding but not insulting'),
+        'gentle': (f'staff member @{username} — speak WARMLY, FRIENDLY, KINDLY, '
+                   'patiently, as a helpful colleague, never condescending, '
+                   'never insulting'),
+    }
+    if _is_owner(username):
+        return owner_str.get(mode, owner_str['gentle'])
+    if _is_respected_user(username):
+        return respected_str.get(mode, respected_str['gentle'])
+    return staff_str.get(mode, staff_str['gentle'])
 
 
 # ── FOYDALANUVCHIGA SHAXSIY (LICHKA) TELEGRAM XABAR ───────────────────────
@@ -2216,25 +2295,12 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         # har safar yozilganiga qarab YANGI javob tuzadi (tayyor matn emas).
         if q and _GREETING_RE.match(q):
             mode = _get_ai_mode()
+            who = _who_string(username, mode)
             if mode == 'angry':
-                who = ('owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, SHORT and CONCISE '
-                       'JARVIS style, NO irony, NO condescension') if _is_owner(username) else \
-                      (f'staff member @{username} — speak CONDESCENDINGLY, with sharp irony and '
-                       'grandiose/self-assured flair, as if looking down on them, but never insulting')
                 persona = _GREETING_PERSONA
             elif mode == 'strict':
-                who = ('owner (call him "ser") — speak COLD, STRICT and COMMANDING but always '
-                       'RESPECTFUL to the owner; SHORT, precise answers in "TASK → GOAL → RESULT" '
-                       'format; NO irony, NO insults, NO condescension') if _is_owner(username) else \
-                      (f'staff member @{username} — speak COLD, STRICT and COMMANDING, '
-                       'discipline-first; short, precise "TASK → GOAL → RESULT" format; '
-                       'demanding but not insulting')
                 persona = _STRICT_GREETING_PERSONA
             else:
-                who = (f'owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, SHORT and CONCISE '
-                       'JARVIS style, warm and kind') if _is_owner(username) else \
-                      (f'staff member @{username} — speak WARMLY, FRIENDLY, KINDLY, patiently, '
-                       'as a helpful colleague, never condescending, never insulting')
                 persona = _GENTLE_GREETING_PERSONA
             prompt = (
                 persona
@@ -2357,25 +2423,12 @@ def staff_chat(question: str, username: str = 'staff') -> dict:
         context = _live_context()
         daily = _daily_context()
         mode = _get_ai_mode()
+        who = _who_string(username, mode)
         if mode == 'angry':
-            who = ('owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, SHORT and CONCISE '
-                   'JARVIS style, NO irony, NO condescension') if _is_owner(username) else \
-                  (f'staff member @{username} — speak CONDESCENDINGLY, with sharp irony and '
-                   'grandiose/self-assured flair, as if looking down on them, but never insulting')
             persona = _PERSONA
         elif mode == 'strict':
-            who = ('owner (call him "ser") — speak COLD, STRICT and COMMANDING but always '
-                   'RESPECTFUL to the owner; SHORT, precise answers in "TASK → GOAL → RESULT" '
-                   'format; NO irony, NO insults, NO condescension') if _is_owner(username) else \
-                  (f'staff member @{username} — speak COLD, STRICT and COMMANDING, '
-                   'discipline-first; short, precise "TASK → GOAL → RESULT" format; '
-                   'demanding but not insulting')
             persona = _STRICT_PERSONA
         else:
-            who = (f'owner (call him "ser") — speak SERIOUSLY, RESPECTFULLY, SHORT and CONCISE '
-                   'JARVIS style, warm and kind') if _is_owner(username) else \
-                  (f'staff member @{username} — speak WARMLY, FRIENDLY, KINDLY, patiently, '
-                   'as a helpful colleague, never condescending, never insulting')
             persona = _GENTLE_PERSONA
         prompt = (
             persona
